@@ -1,0 +1,1008 @@
+{
+  "tempo": 80,
+  "length": 16,
+  "seed": 12345,
+  "root_note": 60,
+  "scale": "Major",
+  "blocks": [
+    {
+      "id": 1,
+      "name": "DRUM",
+      "block_type": "DRUM",
+      "algorithm": "Euclidean",
+      "mode": "SEQ",
+      "midi_channel": 10,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 36,
+      "parameters": {
+        "pulses": 12,
+        "gate": 0.78,
+        "velocity_base": 0.85,
+        "fill_density": 1.0,
+        "event_probability": 1.0,
+        "timing_rate": 0.58,
+        "kit_swing": 0.06666666666666667,
+        "velocity_range": 0.8666666666666667,
+        "velocity_random": 0.14444444444444446,
+        "velocity_accent": 0.7633333333333334
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "pitch": [
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "velocity": [
+          0.9208333333333334,
+          0.9185185185185185,
+          0.819,
+          0.819,
+          0.9208333333333334,
+          0.819,
+          0.9185185185185185,
+          0.819,
+          0.9208333333333334,
+          0.9185185185185185,
+          0.819,
+          0.819,
+          0.9208333333333334,
+          0.819,
+          0.9185185185185185,
+          0.819
+        ],
+        "duration": [
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78
+        ],
+        "density": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0
+        ],
+        "accent": [
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      },
+      "color": "",
+      "muted": false,
+      "drum_voices": [
+        {
+          "id": -101,
+          "parent_id": 1,
+          "name": "KICK",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 36,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "euclidean_steps": 16,
+            "pulses": 4,
+            "euclidean_rotation": 0
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            "pitch": [
+              1.0,
+              0.0,
+              0.7,
+              0.0,
+              1.0,
+              0.0,
+              0.5,
+              0.0,
+              1.0,
+              0.0,
+              0.7,
+              0.0,
+              1.0,
+              0.0,
+              0.5,
+              0.0
+            ],
+            "velocity": [
+              0.9208333333333334,
+              0.0,
+              0.7345833333333333,
+              0.0,
+              0.9208333333333334,
+              0.0,
+              0.7304166666666666,
+              0.0,
+              0.9208333333333334,
+              0.0,
+              0.7345833333333333,
+              0.0,
+              0.9208333333333334,
+              0.0,
+              0.7304166666666666,
+              0.0
+            ],
+            "duration": [
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0
+            ],
+            "density": [
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            "accent": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -102,
+          "parent_id": 1,
+          "name": "SNARE",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "LIVE",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 38,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.16111111111111112,
+            "timing_humanize": 0.08750000000000001,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "euclidean_steps": 16,
+            "pulses": 9,
+            "euclidean_rotation": 4,
+            "bres_pulses": 11,
+            "bres_rotation": 4,
+            "structure_rotation": 2
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              0.0
+            ],
+            "pitch": [
+              0.0
+            ],
+            "velocity": [
+              0.0
+            ],
+            "duration": [
+              0.0
+            ],
+            "density": [
+              0.0
+            ],
+            "accent": [
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -103,
+          "parent_id": 1,
+          "name": "CLOSED HAT",
+          "block_type": "DRUM",
+          "algorithm": "Bresenham",
+          "mode": "LIVE",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 40,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "euclidean_steps": 16,
+            "pulses": 8,
+            "euclidean_rotation": 0
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              0.0
+            ],
+            "pitch": [
+              0.0
+            ],
+            "velocity": [
+              0.0
+            ],
+            "duration": [
+              0.0
+            ],
+            "density": [
+              0.0
+            ],
+            "accent": [
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -104,
+          "parent_id": 1,
+          "name": "OPEN HAT",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 46,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "pattern": "0,1,0,0,1,0,0,0,0,1,0,1,1,0,0,1",
+            "pattern_scale": 0.8888888888888888,
+            "pattern_rotation": 3
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            "pitch": [
+              0.0,
+              0.8888888888888888,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.8888888888888888,
+              0.0,
+              0.8888888888888888,
+              0.8888888888888888,
+              0.0,
+              0.0,
+              0.8888888888888888,
+              0.0,
+              0.8888888888888888,
+              0.0
+            ],
+            "velocity": [
+              0.0,
+              0.9185185185185185,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.9185185185185185,
+              0.0,
+              0.9185185185185185,
+              0.9185185185185185,
+              0.0,
+              0.0,
+              0.9185185185185185,
+              0.0,
+              0.9185185185185185,
+              0.0
+            ],
+            "duration": [
+              0.0,
+              0.78,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.78,
+              0.0,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0
+            ],
+            "density": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0
+            ],
+            "accent": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              1.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -105,
+          "parent_id": 1,
+          "name": "CLAP",
+          "block_type": "DRUM",
+          "algorithm": "Bresenham",
+          "mode": "LIVE",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 39,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "euclidean_steps": 16,
+            "pulses": 2,
+            "euclidean_rotation": 4,
+            "bres_pulses": 11,
+            "bres_rotation": 10
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              1.0
+            ],
+            "pitch": [
+              0.0
+            ],
+            "velocity": [
+              0.819
+            ],
+            "duration": [
+              0.78
+            ],
+            "density": [
+              1.0
+            ],
+            "accent": [
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -106,
+          "parent_id": 1,
+          "name": "PERC",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_port": "Client-128:Virtual RawMIDI 128:0",
+          "midi_note": 41,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "pattern": "1,0,0,0,1,1,0,1,0,0,1,0,0,0,1,0",
+            "pattern_rotation": 6,
+            "pattern_scale": 0.2666666666666666,
+            "pattern_probability": 0.9277777777777777
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {
+            "rhythm": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "pitch": [
+              0.0,
+              0.2666666666666666,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.2666666666666666,
+              0.0,
+              0.2666666666666666,
+              0.0,
+              0.0,
+              0.0,
+              0.2666666666666666,
+              0.2666666666666666
+            ],
+            "velocity": [
+              0.0,
+              0.7255555555555555,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.7255555555555555,
+              0.0,
+              0.7255555555555555,
+              0.0,
+              0.0,
+              0.0,
+              0.7255555555555555,
+              0.7255555555555555
+            ],
+            "duration": [
+              0.0,
+              0.78,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.78,
+              0.0,
+              0.78,
+              0.0,
+              0.0,
+              0.0,
+              0.78,
+              0.78
+            ],
+            "density": [
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              0.0,
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "accent": [
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          },
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "BASS",
+      "block_type": "BASS",
+      "algorithm": "Random Walk",
+      "mode": "LIVE",
+      "midi_channel": 5,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 60,
+      "parameters": {
+        "gate": 0.78,
+        "pitch_range": 36,
+        "fill_density": 1.0,
+        "role_center": -17,
+        "role_width": 36,
+        "role_duration": 1.1,
+        "groove_follow": 0.7,
+        "groove_accent": 0.65,
+        "groove_offset": 0,
+        "groove_mode": "Union",
+        "relation_drum_source": 1,
+        "role_density": 0.9,
+        "role_root_bias": 0.35,
+        "velocity_base": 0.7366666666666667,
+        "event_probability": 1.0,
+        "transpose": 0.0,
+        "velocity_range": 0.33333333333333337,
+        "velocity_random": 0.16666666666666669,
+        "velocity_accent": 0.6744444444444444
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0
+        ],
+        "pitch": [
+          -17.0
+        ],
+        "velocity": [
+          0.9546976948046833
+        ],
+        "duration": [
+          0.7742163000000001
+        ],
+        "density": [
+          1.0
+        ],
+        "accent": [
+          1.0
+        ]
+      },
+      "color": "",
+      "muted": false,
+      "drum_voices": null
+    },
+    {
+      "id": 3,
+      "name": "MELODY",
+      "block_type": "MELODY",
+      "algorithm": "Markov",
+      "mode": "LIVE",
+      "midi_channel": 4,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 60,
+      "parameters": {
+        "live_min_beats": 0.18,
+        "live_max_beats": 0.65,
+        "live_gate": 1.3283333333333331,
+        "gate": 0.28,
+        "pitch_range": 36,
+        "fill_density": 0.75,
+        "role_center": 0,
+        "role_width": 36,
+        "role_duration": 2.808333333333333,
+        "harmony_anchor": 0.55,
+        "relation_chord_source": -1,
+        "role_density": 0.75,
+        "role_root_bias": 0.0,
+        "harmony_size": 3,
+        "harmony_spread": 12,
+        "harmony_inversion": 0,
+        "pad_sustain": 1.75,
+        "velocity_base": 0.27222222222222225,
+        "transpose": 0.0,
+        "markov_rest": 0.15,
+        "structure_rotation": 2,
+        "timing_rate": 1.2291666666666667,
+        "mutation_velocity": 1.0,
+        "mutation_timing": 0.8277777777777777,
+        "scale_root": 60,
+        "markov_leap": 0.46444444444444444,
+        "markov_stay": 0.3611111111111111
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 1.0,
+          "target": "timing"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5444444444444444,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0
+        ],
+        "pitch": [
+          4.0
+        ],
+        "velocity": [
+          0.575846461664925
+        ],
+        "duration": [
+          23.252999999999997
+        ],
+        "density": [
+          1.0
+        ],
+        "accent": [
+          0.4888888888888889
+        ]
+      },
+      "color": "",
+      "muted": false,
+      "drum_voices": null
+    }
+  ],
+  "relations": [
+    {
+      "source_block": 1,
+      "source_part": "rhythm",
+      "destination_block": 2,
+      "destination_part": "rhythm",
+      "algorithm": "Quantize To",
+      "amount": 0.8055555555555556,
+      "curve": "Linear",
+      "delay": 1,
+      "probability": 0.5722222222222222,
+      "enabled": true,
+      "id": 1
+    },
+    {
+      "source_block": 2,
+      "source_part": "rhythm",
+      "destination_block": 3,
+      "destination_part": "accent",
+      "algorithm": "Follow",
+      "amount": 0.4888888888888889,
+      "curve": "Linear",
+      "delay": 0,
+      "probability": 0.6944444444444444,
+      "enabled": true,
+      "id": 2
+    }
+  ],
+  "block_colors": {},
+  "macros": [
+    {
+      "name": "MACRO 4",
+      "value": 1.0,
+      "routes": []
+    },
+    {
+      "name": "MACRO 4",
+      "value": 0.95,
+      "routes": []
+    },
+    {
+      "name": "MACRO 4",
+      "value": 0.0,
+      "routes": []
+    },
+    {
+      "name": "MACRO 4",
+      "value": 0.12,
+      "routes": []
+    }
+  ],
+  "performance": {
+    "1": {
+      "preset_id": "ritardando",
+      "amount": 1.0,
+      "shape": "out",
+      "beats": 4.0,
+      "enabled": false
+    },
+    "3": {
+      "preset_id": "register_fall",
+      "amount": 1.0,
+      "shape": "out",
+      "beats": 8.0,
+      "enabled": false
+    },
+    "2": {
+      "preset_id": "crescendo",
+      "amount": 1.0,
+      "shape": "out",
+      "beats": 4.0,
+      "enabled": false
+    }
+  },
+  "motifs": {},
+  "phrase_state": {
+    "phrase_id": "opening_bloom",
+    "name": "Opening Bloom",
+    "position_beats": 12.004778541333556,
+    "stage_index": -1,
+    "intensity": 1.0,
+    "tension": {
+      "points": [
+        {
+          "beat": 0.0,
+          "value": 0.2,
+          "label": ""
+        },
+        {
+          "beat": 16.0,
+          "value": 0.62,
+          "label": ""
+        }
+      ],
+      "smoothing": 0.35
+    },
+    "active_motifs": [],
+    "block_ids": [
+      1,
+      2,
+      3
+    ],
+    "running": false,
+    "memory": {}
+  }
+}

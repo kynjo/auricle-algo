@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "auricle"
+dynamic = ["version"]
+description = "Algorithmic MIDI music generator built from independent generator blocks"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PySide6>=6.8,<7",
+    "mido>=1.3.3,<2",
+    "python-rtmidi>=1.5.8,<2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["pyinstaller>=6.11,<7"]
+
+[project.gui-scripts]
+auricle = "auricle_gui:main"
+
+[tool.setuptools]
+py-modules = ["auricle_core", "auricle_catalogs", "auricle_model", "auricle_engine", "auricle_relations", "auricle_persistence", "auricle_transport", "auricle_gui", "generators", "performance_presets", "help_content", "ui_themes", "version", "music_director", "motif_engine", "voice_leading", "relation_context", "transport_queue", "transport_worker"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.dynamic]
+version = {attr = "version.APP_VERSION"}
