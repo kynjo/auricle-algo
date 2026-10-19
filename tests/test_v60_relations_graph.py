@@ -1,25 +1,29 @@
-from pathlib import Path
-
-GUI_SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
-
-
-def test_relations_graph_is_no_longer_node_based():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    assert "class RelationNode" not in source
-    assert "class RelationBlockNode" not in source
-    assert "class RelationPort" not in source
-    assert "QGraphicsProxyWidget" not in source
+"""Behavioral checks for the current inline relation editor."""
+import pytest
+from test_inline_editors import window, editor, drain
 
 
-def test_relations_editor_uses_table_selection():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    assert "QTableWidget" in source
-    assert "self.table.setSelectionBehavior(QAbstractItemView.SelectRows)" in source
-    assert "self.table.itemSelectionChanged.connect(self._selection_changed)" in source
+def test_duplicate_delete_and_stale_callbacks_keep_the_right_relation(editor):
+    gui, app, win, panel = editor
+    import shiboken6
 
+    win.add_relation(); drain(app)
+    first = panel.rows[0]
+    first.curve.setCurrentText("Exponential")
+    first.amount.setValue(.73)
+    first.duplicate.click()
+    drain(app)
+    second = panel.rows[1]
+    assert second.relation.id != first.relation.id
+    assert second.relation.curve == "Exponential"
+    assert second.relation.amount == pytest.approx(.73)
+    first.remove.click()
+    assert shiboken6.isValid(first)  # no native widget deletion in its own signal
+    assert win.project.relations == [second.relation]
+    first.amount.setValue(.1)  # late event from a removed row must be ignored
+    assert second.relation.amount == pytest.approx(.73)
+    drain(app)
+    assert panel.rows == [second]
+    second.amount.setValue(.24)
+    assert win.project.relations[0].amount == pytest.approx(.24)
 
-def test_relation_delete_is_not_tied_to_graphic_node_teardown():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    block = source[source.index("def delete_selected_relation"):source.index("def delete_relation", source.index("def delete_selected_relation"))]
-    assert "remove_relation(self.project, index)" in block
-    assert "QTimer.singleShot(0" in block

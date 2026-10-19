@@ -1,23 +1,26 @@
-from pathlib import Path
-
-GUI_SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
-
-
-def test_relation_parameters_have_visible_table_columns():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    assert 'COLUMNS = ("", "Source", "Output", "Operation", "Destination", "Input", "Amount", "State")' in source
+"""Behavioral checks for the current inline relation editor."""
+import pytest
+from test_inline_editors import window, editor, drain
 
 
-def test_relation_editor_has_single_inspector():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    assert 'QGroupBox("RELATION INSPECTOR")' in source
-    assert 'form.addRow("Source block", self.source)' in source
-    assert 'form.addRow("Destination block", self.dest)' in source
-    assert 'form.addRow("Amount", self.amount)' in source
+def test_block_colours_and_names_refresh_in_both_endpoint_lists(editor):
+    gui, app, win, panel = editor
+    win.add_relation(); drain(app)
+    row = panel.rows[0]
+    win._dirty = False
+    panel.rebuild(win.project)
+    assert not win._dirty
+    for combo in (row.source, row.dest):
+        for index, block in enumerate(win.project.blocks):
+            assert combo.itemIcon(index).pixmap(12, 12).toImage().pixelColor(6, 6).name() == gui.block_color(win.project, block)
+    block = win.project.blocks[0]
+    win._card_color_changed(block.id, "#2ac789")
+    drain(app)
+    win._rename_block(block, "My drums")
+    assert panel.rows[0] is row
+    for combo in (row.source, row.dest):
+        index = combo.findData(block.id)
+        assert combo.itemText(index) == "My drums"
+        assert combo.itemIcon(index).pixmap(12, 12).toImage().pixelColor(6, 6).name() == "#2ac789"
+    assert row.source.currentData() == block.id
 
-
-def test_relation_block_position_compatibility_hook_remains_safe():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    assert 'def forget_block_position(self, block_id):' in source
-    assert 'return None' in source
-    assert 'self.relation_graph.forget_block_position(b.id)' in source

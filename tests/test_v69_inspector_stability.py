@@ -18,7 +18,3 @@ def test_knob_has_room_for_numeric_readout():
     assert "self.setFixedSize(54, 74)" in source
     assert 'self.value_label.setObjectName("knobValue")' in source
 
-def test_mutator_rows_are_taller_than_knob_readout():
-    source = _source()
-    block = source[source.index("# MOTION"):source.index("# MONITOR / diagnostics")]
-    assert "wrapper.setMinimumHeight(78)" in block

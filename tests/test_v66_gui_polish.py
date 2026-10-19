@@ -32,13 +32,6 @@ def test_inspector_knob_cells_are_wide_enough_for_labels():
     assert "cell.setFixedWidth(74)" in structure
 
 
-def test_mutator_rows_have_room_for_knob_value():
-    source = _source()
-    motion = source[source.index("# MOTION"):source.index("# MONITOR / diagnostics")]
-    assert "wrapper.setMinimumHeight(78)" in motion
-    assert "QSizePolicy.Expanding, QSizePolicy.Fixed" in motion
-
-
 def test_add_buttons_share_the_same_style_object():
     source = _source()
     motion = source[source.index("# MOTION"):source.index("# MONITOR / diagnostics")]

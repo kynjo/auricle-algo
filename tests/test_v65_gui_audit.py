@@ -29,17 +29,6 @@ def test_accordion_state_is_idempotent():
     assert "self._expanded = expanded" in layer
 
 
-def test_relation_editor_does_not_depend_on_graph_drag_lifecycle():
-    source = SOURCE.read_text()
-    start = source.index("class RelationGraphEditor")
-    end = source.index("class RelationEditor", start)
-    block = source[start:end]
-    assert "QTableWidget" in block
-    assert "itemSelectionChanged" in block
-    assert "MouseMove" not in block
-    assert "MouseButtonRelease" not in block
-
-
 def test_stop_is_not_a_checkable_state_button():
     source = SOURCE.read_text()
     assert 'self.stop = QPushButton("STOP"); self.stop.setObjectName("transportStop")' in source

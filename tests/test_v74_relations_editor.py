@@ -1,46 +1,32 @@
-from pathlib import Path
-
-SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
-
-
-def test_relations_are_not_node_widgets():
-    source = SOURCE.read_text(encoding="utf-8")
-    assert "class RelationNode" not in source
-    assert "class RelationBlockNode" not in source
-    assert "class RelationPort" not in source
-    assert "QGraphicsProxyWidget" not in source
+"""Behavioral checks for the current inline relation editor."""
+import pytest
+from test_inline_editors import window, editor, drain
+from auricle_core import Block, Project
 
 
-def test_relations_use_model_table_and_single_inspector():
-    source = SOURCE.read_text(encoding="utf-8")
-    assert "class RelationGraphEditor(QWidget):" in source
-    assert "QTableWidget" in source
-    assert '"RELATION INSPECTOR"' in source
-    assert "self.table.setSelectionBehavior(QAbstractItemView.SelectRows)" in source
+def test_add_relation_immediately_creates_an_editable_row(editor):
+    gui, app, win, panel = editor
+    panel.add_button.click()
+    assert len(win.project.relations) == 1
+    drain(app)
+    relation = win.project.relations[0]
+    assert relation.source_block != relation.destination_block
+    assert relation.id > 0
+    assert len(panel.rows) == 1
+    assert not hasattr(panel, "table")
+    assert panel.rows[0].relation is relation
+    assert panel.rows[0].source.isEnabled()
+    assert win._dirty
 
 
-def test_relation_delete_is_model_first_and_deferred_refresh():
-    source = SOURCE.read_text(encoding="utf-8")
-    block = source[source.index("def delete_selected_relation"):source.index("def delete_relation", source.index("def delete_selected_relation"))]
-    assert "remove_relation(self.project, index)" in block
-    assert "self.host.engine.generate()" in block
-    assert "QTimer.singleShot(0" in block
 
+def test_pending_add_does_not_reintroduce_rows_after_project_switch(editor):
+    gui, app, win, panel = editor
+    win.add_relation()
+    replacement = Project(blocks=[Block(22, "Only block", "MELODY", "Pattern")])
+    win._install_project(replacement, None, "Replacement")
+    drain(app)
+    assert panel.project is replacement
+    assert not panel.rows
+    assert not panel.add_button.isEnabled()
 
-def test_relation_editor_has_no_embedded_graph_widgets():
-    source = SOURCE.read_text(encoding="utf-8")
-    assert "QGraphicsProxyWidget(self)" not in source
-    assert "relation_nodes" not in source
-    assert "rebuild_edges_only" not in source
-
-
-def test_current_version_is_sequential():
-    version = (Path(__file__).resolve().parents[1] / "version.py").read_text(encoding="utf-8")
-    assert __import__("re").search(r'APP_VERSION = "v110"', version)
-
-
-def test_relation_amount_uses_paramknob_signal():
-    source = SOURCE.read_text(encoding="utf-8")
-    block = source[source.index("class RelationGraphEditor"):source.index("class RelationEditor")]
-    assert "self.amount.changed.connect(self._inspector_changed)" in block
-    assert "self.amount.valueChanged" not in block

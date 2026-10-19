@@ -1,24 +1,26 @@
-from pathlib import Path
+"""Behavioral checks for the current inline relation inspector."""
+from test_inline_editors import window, editor, drain
+from auricle_persistence import load_project
 
-SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
 
-def test_relation_inspector_uses_single_horizontal_editor_row():
-    s = SOURCE.read_text(encoding="utf-8")
-    block = s[s.index("class RelationGraphEditor"):s.index("class RelationEditor")]
-    assert "row = QHBoxLayout()" in block
-    assert 'add_field("Source", self.source' in block
-    assert 'add_field("Output", self.source_part' in block
-    assert 'add_field("Operation", self.algorithm' in block
-    assert 'add_field("Destination", self.dest' in block
-    assert 'add_field("Input", self.dest_part' in block
-    assert 'add_field("Amount", self.amount' in block
-    assert 'add_field("Curve", self.curve' in block
-    assert 'add_field("Delay", self.delay' in block
-    assert 'add_field("Probability", self.probability' in block
-    assert "state_cell = QVBoxLayout()" in block
+def test_new_relation_scrolls_into_view_and_mutator_knob_fits(editor):
+    gui, app, win, panel = editor
+    win.resize(1250, 760)
+    win.tabs.setCurrentIndex(2)
+    win.show()
+    for _ in range(7):
+        panel.add_button.click()
+        drain(app)
+    row = panel.rows[-1]
+    bottom = row.mapTo(panel.scroll.viewport(), row.rect().bottomRight()).y()
+    assert bottom <= panel.scroll.viewport().height()
+    assert panel.scroll.verticalScrollBar().value() > 0
+    win.tabs.setCurrentIndex(0)
+    win._inspector_state[(win.selected_block_id, "MOTION")] = True
+    win.add_mutator()
+    drain(app)
+    row = win.inspector_page.findChild(gui.MutatorInlineControls)
+    assert row.height() >= row.amount.height()
+    assert row.amount.geometry().bottom() < row.height()
+    win.hide()
 
-def test_relation_inspector_no_longer_uses_vertical_form_rows():
-    s = SOURCE.read_text(encoding="utf-8")
-    block = s[s.index("class RelationGraphEditor"):s.index("class RelationEditor")]
-    assert 'form = QFormLayout(inspector_box)' not in block
-    assert 'form.addRow("Source block"' not in block

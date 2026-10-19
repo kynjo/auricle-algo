@@ -39,20 +39,10 @@ def test_inspector_scroll_is_preserved_after_rebuild():
 def test_parameter_regeneration_is_deferred():
     source = GUI_SOURCE.read_text(encoding="utf-8")
     start = source.index("    def _set_param(self, b, key, value):")
-    end = source.index("    def _set_mutator", start)
+    end = source.index("    def _mutator_editor_changed", start)
     block = source[start:end]
     assert "QTimer.singleShot(0" in block
     assert "def _flush_param_regen" in block
-
-
-def test_mutators_are_rendered_as_one_vertical_column():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    start = source.index('        for idx,m in enumerate(b.mutators):')
-    end = source.index('        add=QPushButton("+ Add mutator")', start)
-    block = source[start:end]
-    assert "ml.addWidget(wrapper)" in block
-    assert "col=idx%3" not in block
-    assert "row=idx//3" not in block
 
 
 def test_process_numeric_controls_use_compact_knob_grid():
