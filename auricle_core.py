@@ -18,5 +18,6 @@ from motif_engine import Motif, MotifEngine, PhraseState, TensionCurve
 from music_director import MusicDirector
 from voice_leading import VoiceLeading
 from relation_context import MusicalContext
+from musical_clock import MusicalClock
 
 __all__ = [name for name in globals() if not name.startswith("_")]

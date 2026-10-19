@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from auricle_model import Project, Relation
 
 def validate_relations(project: Project) -> list[tuple[int, str]]:
@@ -32,7 +33,7 @@ def duplicate_relation(project: Project, index: int) -> Relation | None:
     r=project.relations[int(index)]
     copy=Relation(r.source_block,r.source_part,r.destination_block,r.destination_part,r.algorithm,r.amount,
                   getattr(r,"curve","Linear"),int(getattr(r,"delay",0)),float(getattr(r,"probability",1.0)),
-                  bool(getattr(r,"enabled",True)),next_relation_id(project))
+                  bool(getattr(r,"enabled",True)),next_relation_id(project), deepcopy(r.parameters))
     project.relations.insert(int(index)+1,copy)
     return copy
 

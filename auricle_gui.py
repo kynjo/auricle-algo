@@ -6,6 +6,7 @@ import random
 import sys
 import time
 from pathlib import Path
+from shiboken6 import isValid
 
 from PySide6.QtCore import Qt, Signal, QTimer, QSize, QRectF, QPoint, QPointF, QEvent
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPixmap, QIcon, QPalette, QKeySequence, QShortcut, QPainterPath
@@ -16,7 +17,6 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QMessageBox, QFileDialog, QSplitter, QScrollArea, QMenu,
     QFrame, QButtonGroup, QSizePolicy, QAbstractItemView, QCheckBox, QInputDialog, QLayout,
     QTabWidget, QTabBar, QTextBrowser, QProgressBar, QGraphicsView, QGraphicsScene,
-    QTableWidget, QTableWidgetItem, QHeaderView,
     QGraphicsRectItem, QGraphicsLineItem, QGraphicsTextItem, QColorDialog,
 )
 
@@ -30,6 +30,19 @@ from auricle_core import (
 from performance_presets import phrases as performance_phrases, phrase_for, phrase_with_duration, interpolate_preset
 from ui_themes import theme_names, theme_palette, theme_stylesheet, mix as theme_mix, on_color
 from help_content import help_html
+from auricle_drum import KIT_DEFAULTS, KIT_TOOLTIPS, kit_value
+from coordinated_kit import (ROLES as KIT_ROLES, STYLES as KIT_STYLES, METERS as KIT_METERS,
+                             CREATIVE_DEFAULTS, creative_value, KitStep, coordinated,
+                             voice_role, infer_role, phrase_bars, STEP_BEATS)
+from motif_development import MODES as MOTIF_MODES, settings as motif_settings, digest as motif_digest
+from pattern_chance import step_chances
+from drum_editing import sound_snapshot, apply_sound
+from project_history_ui import HistoryController
+from project_history import document_state
+from auricle_persistence import project_from_dict
+from harmonic_plan_ui import HarmonicPlanPanel
+from instrument_dialogue_ui import DialogueControls
+from auricle_resources import asset_path, REQUIRED_ASSETS
 
 PARAMETER_LABELS = {
     "fill_density": "Density", "event_probability": "Probability", "gate": "Gate",
@@ -117,14 +130,6 @@ def block_color(project, block):
     """
     color = getattr(block, "color", "") or ""
     return color if color else block_type_color(project, block.block_type)
-
-
-def asset_path(name: str) -> Path:
-    """Return a bundled UI asset (source tree or PyInstaller bundle)."""
-    bundle = getattr(sys, "_MEIPASS", None)
-    if bundle and (Path(bundle) / "assets" / name).exists():
-        return Path(bundle) / "assets" / name
-    return Path(__file__).resolve().parent / "assets" / name
 
 
 # Active theme tokens for widgets that paint themselves or need per-widget
@@ -327,6 +332,10 @@ class Knob(QWidget):
         self.value_label.setAlignment(Qt.AlignCenter)
         self.value_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.value_label.setGeometry(0, 55, 54, 17)
+
+    def bind_parameter(self, block_id, key):
+        self._auricle_parameter = (block_id, key)
+        self.setToolTip(self.toolTip() + " · Click value or right-click for parameter influences")
 
     def _norm(self):
         if self.hi == self.lo: return 0.0
@@ -1263,11 +1272,13 @@ class PhrasePanel(QGroupBox):
         self.amount.setValue(amount)
         self.amount.blockSignals(False)
         self.amount_label.setText(f"{amount}%")
-        ids = getattr(state, "block_ids", None)
+        ids = saved.get("block_ids", getattr(state, "block_ids", None))
         if ids is None:
             ids = getattr(self.host.project, "phrase_state", {}).get("block_ids", [])
         if ids:
             self._target_ids = {int(item) for item in ids}
+        else:
+            self._target_ids = {int(block.id) for block in self.host.project.blocks if not block.muted}
         self._refresh_phrase_preview()
         self._syncing = False
 
@@ -1276,6 +1287,7 @@ class PhrasePanel(QGroupBox):
         if dialog.exec() == QDialog.Accepted:
             self._target_ids = set(dialog.selected_ids())
             self.refresh_blocks(self.host.project)
+            self._save_settings()
 
     def _phrase_changed(self, *_):
         phrase = phrase_for(self.phrase_combo.currentData())
@@ -1304,6 +1316,7 @@ class PhrasePanel(QGroupBox):
             "phrase_id": self.phrase_combo.currentData(),
             "duration_beats": float(self.duration.value()),
             "amount": self.amount.value() / 100.0,
+            "block_ids": self._selected_ids(),
         }
         self.host._mark_dirty()
 
@@ -1534,8 +1547,10 @@ class PerformanceBlockCard(QFrame):
         # Natural content height keeps rows compact without clipping wrapped
         # descriptions or stretching the gaps beside the fixed-size graph.
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._restoring_settings = True
         self._load_catalog()
         self._restore_performance_state()
+        self._restoring_settings = False
 
     def _mode_changed(self, mode):
         mode = "LIVE" if mode == "LIVE" else "SEQ"
@@ -1566,7 +1581,7 @@ class PerformanceBlockCard(QFrame):
         beats = state.get("beats")
         if beats in (1, 2, 4, 8, 16):
             self.length.setCurrentText(f"{int(beats)} beat" if int(beats) == 1 else f"{int(beats)} beats")
-        if state.get("enabled"):
+        if state.get("enabled") and not getattr(getattr(self.host, "history_controller", None), "restoring", False):
             running = self.host.engine.performance.active.get(self.block_id)
             if running is not None and getattr(running, "phrase_id", None) is None:
                 # Card rebuilt while its gesture plays: reflect, do not restart.
@@ -1609,6 +1624,7 @@ class PerformanceBlockCard(QFrame):
         return "in_out" if self.shape.currentText() == "in/out" else self.shape.currentText()
 
     def _save_performance_state(self, enabled=None):
+        if getattr(self, "_restoring_settings", False): return
         self.host.project.performance[str(self.block_id)] = {
             "preset_id": self.preset_combo.currentData(),
             "amount": self.amount.value() / 100.0,
@@ -1624,6 +1640,7 @@ class PerformanceBlockCard(QFrame):
         preset = preset_for(self.block.block_type, self.block.algorithm, self.preset_combo.currentData())
         if preset:
             self.technique_curve.set_technique(preset, self.amount.value() / 100.0, self._shape_value())
+        if getattr(self, "_restoring_settings", False): return
         state = self.host.engine.performance.active.get(self.block_id)
         if state:
             state.amount = self.amount.value() / 100.0
@@ -1709,14 +1726,19 @@ class PerformanceBlockCard(QFrame):
         rels_out = sum(1 for r in project.relations if getattr(r, "enabled", True) and r.source_block == self.block_id)
         rhythm = self.block.outputs.get("rhythm") or []
         density = (sum(1 for v in rhythm if v > 0) / len(rhythm)) if rhythm else 0.0
-        motif = "—"
-        phrase = engine.director.phrase
-        if phrase.running:
-            for mid in phrase.active_motifs:
-                m = engine.director.motifs.motifs.get(mid)
-                if m and str(m.role).upper() == role:
-                    motif = m.name or mid
-                    break
+        active_motif = engine.active_motif(self.block)
+        motif = active_motif.name if active_motif is not None else "—"
+        with self.host.transport._state_lock:
+            route = engine.dialogue_runtime.route_for(self.block)
+            if route is not None:
+                relation = route['relation']
+                state = engine.dialogue_runtime.status(relation, engine.clock.position_beats)
+                source = self.block.id == relation.source_block
+                partner_id = relation.destination_block if source else relation.source_block
+                partner = next((b.name for b in blocks if b.id == partner_id), '?')
+                turn = ('Calling' if source else 'Waiting') if state['phase'] == 'Call' else (
+                    ('Waiting' if source else 'Responding') if state['phase'] == 'Response' else 'Pause')
+                line = f"Dialogue ↔ {partner} · {turn} · {state['remaining']:.1f} beats" if state['active'] else f"Dialogue · {state['reason']}"
         text = f"{line}\nRelations in {rels_in} · out {rels_out} · Motif {motif} · Density {density:.2f}"
         if self.diagnostics.text() != text:
             self.diagnostics.setText(text)
@@ -2153,6 +2175,10 @@ class PerformancePanel(QWidget):
         self.phrase_section = PerformSection("GLOBAL PHRASE", self.phrase_panel, expanded=True)
         lay.addWidget(self.phrase_section)
 
+        self.harmonic_panel = HarmonicPlanPanel(self.host)
+        self.harmonic_section = PerformSection("HARMONIC PLAN", self.harmonic_panel, expanded=True)
+        lay.addWidget(self.harmonic_section)
+
         # Global macros are intentionally shown once in the window header.
         # Keep the attribute for callers that refresh legacy route panels.
         self.macro_panel = None
@@ -2503,6 +2529,148 @@ class AddBlockDialog(QDialog):
         form.addRow(buttons)
 
 
+class KitStepRuler(QWidget):
+    """A transport cursor for every slot in the selected meter."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.cursor = -1
+        self.steps = 16
+        self.setMinimumWidth(176)
+        self.setFixedHeight(21)
+        self.setAccessibleName("Kit bar playhead")
+
+    def set_cursor(self, cursor, steps=16):
+        if cursor != self.cursor or steps != self.steps:
+            self.cursor, self.steps = cursor, steps
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        width = self.width() / self.steps
+        font = painter.font(); font.setPixelSize(9 if width < 13 else 10); painter.setFont(font)
+        stride = 2 if width < 13 else 1
+        for i in range(self.steps):
+            rect = QRectF(i * width + 1, 1, max(1, width - 2), 19)
+            if i == self.cursor:
+                painter.fillRect(rect, QColor("#ffc568"))
+            painter.setPen(QColor("#15202b" if i == self.cursor else "#b7c7d6"))
+            # Dense compound-meter grids keep legible labels rather than
+            # squeezing adjacent two-digit numbers into a single string.
+            if i == self.cursor or (i % stride == 0 and
+                    (self.cursor < 0 or abs(i - self.cursor) >= stride)):
+                painter.drawText(rect.adjusted(-2, 0, 2, 0), Qt.AlignCenter, str(i + 1))
+
+
+class KitPlanLane(QWidget):
+    """Read-only arrangement for the current bar; source editing stays below."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(176)
+        self.setFixedHeight(22)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.steps, self.cursor = [], -1
+        self.output_values = None
+        self.groups = (4, 4, 4, 4)
+        self.setToolTip("Kit plan before processing: green = protected beat, teal = added hit, outline = optional source slot, orange = fill. The playhead crosses the whole bar, including rests. Edit the generator in SOURCE below.")
+
+    def set_plan(self, steps, cursor, groups=(4, 4, 4, 4)):
+        if self.output_values is not None:
+            self.setToolTip("Kit plan before processing: green = protected beat, teal = added hit, outline = optional source slot, orange = fill.")
+        count = sum(groups)
+        steps = (list(steps) + [KitStep()] * count)[:count]
+        if steps != self.steps or cursor != self.cursor or groups != self.groups or self.output_values is not None:
+            self.steps, self.cursor = steps, cursor
+            self.output_values = None
+            self.groups = groups
+            self.update()
+
+    def set_output(self, values, cursor, groups):
+        if self.output_values is None:
+            self.setToolTip("Accepted generated output: bar height = velocity, dash = rest, grey = not visited. Includes processing, probability and mute; works without a MIDI port. This is not feedback from the instrument.")
+        values = list(values)
+        if values != self.output_values or cursor != self.cursor or groups != self.groups:
+            self.output_values, self.cursor, self.groups = values, cursor, groups
+            self.steps = [KitStep()] * len(values)
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        width = self.width() / sum(self.groups)
+        boundaries = {sum(self.groups[:i]) for i in range(len(self.groups))}
+        for i, step in enumerate(self.steps):
+            color = "#e2a554" if step.fill else ("#65b9ac" if step.anchor else "#558fa6" if step.force else "#657982" if step.allowed else "#333e49")
+            painter.setBrush(QColor(color if step.force or step.fill else "#17212b"))
+            painter.setPen(QPen(QColor(color), 1))
+            painter.drawRoundedRect(QRectF(i * width + 1, 3, max(1, width - 3), 16), 2, 2)
+            if self.output_values is not None:
+                value = self.output_values[i]
+                rect = QRectF(i * width + 1, 3, max(1, width - 3), 16)
+                painter.fillRect(rect, QColor("#28313b" if value is None else "#101923"))
+                if value is not None and value > 0:
+                    height = max(3., 16 * value)
+                    painter.fillRect(QRectF(rect.x(), 19 - height, rect.width(), height), QColor("#65b9ac"))
+                elif value == 0:
+                    painter.setPen(QPen(QColor("#657982"), 1))
+                    painter.drawLine(QPointF(rect.left() + 1, 11), QPointF(rect.right() - 1, 11))
+            if i in boundaries:
+                painter.setPen(QPen(QColor("#8295a6"), 1))
+                painter.drawLine(QPointF(i * width, 0), QPointF(i * width, 22))
+            if i == self.cursor:
+                painter.fillRect(QRectF(i * width + 1, 1, max(1, width - 2), 20), QColor(255, 197, 104, 55))
+                painter.setPen(QPen(QColor("#ffc568"), 2))
+                painter.drawLine(QPointF((i + .5) * width, 0), QPointF((i + .5) * width, 22))
+
+
+class PatternChanceEditor(QWidget):
+    """Compact editor for all source steps, without a wide row of knobs."""
+    def __init__(self, host, block, parent=None):
+        super().__init__(parent)
+        self.host, self.block = host, block
+        self.setObjectName("patternChanceEditor")
+        self.setToolTip("Chance on every pass, after processing. Steps follow Pattern Reverse/Rotation. 0% mutes the step, 100% always passes it. An active motif uses its own rhythm.")
+        row = QHBoxLayout(self); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(5)
+        row.addWidget(QLabel("Step"))
+        self.step = ContrastSpinBox(); self.step.setObjectName("patternChanceStep"); self.step.setFixedWidth(54)
+        row.addWidget(self.step)
+        self.chance = QSlider(Qt.Horizontal); self.chance.setRange(0, 100)
+        self.chance.setObjectName("patternChanceValue"); self.chance.setMinimumWidth(70)
+        row.addWidget(self.chance, 1)
+        self.value_label = QLabel(); self.value_label.setFixedWidth(35); row.addWidget(self.value_label)
+        reset = QPushButton("All 100%"); reset.setObjectName("patternChanceReset"); row.addWidget(reset)
+        self.step.valueChanged.connect(self._refresh_value)
+        self.chance.valueChanged.connect(self._changed)
+        reset.clicked.connect(self._reset)
+        self.refresh()
+
+    def refresh(self):
+        self.step.blockSignals(True)
+        self.step.setRange(1, len(step_chances(self.block.parameters)))
+        self.step.blockSignals(False)
+        self._refresh_value()
+
+    def _refresh_value(self, *_):
+        values = step_chances(self.block.parameters)
+        value = round(100 * values[min(self.step.value() - 1, len(values) - 1)])
+        self.chance.blockSignals(True); self.chance.setValue(value); self.chance.blockSignals(False)
+        self.value_label.setText(f"{value}%")
+
+    def _changed(self, value):
+        with self.host.transport._state_lock:
+            if self.host.get_entity(self.block.id) is not self.block:
+                return
+            values = step_chances(self.block.parameters)
+            values[self.step.value() - 1] = value / 100.
+            self.block.parameters["pattern_step_chances"] = values
+        self.value_label.setText(f"{value}%"); self.host._mark_dirty()
+
+    def _reset(self):
+        with self.host.transport._state_lock:
+            if self.host.get_entity(self.block.id) is not self.block:
+                return
+            self.block.parameters.pop("pattern_step_chances", None)
+        self.host._mark_dirty(); self._refresh_value()
+
+
 class DrumKitEditor(QGroupBox):
     """Compact Drum Machine editor embedded in the DRUM inspector."""
     VOICE_COLORS = ("#e57373", "#ffb74d", "#fff176", "#81c784", "#64b5f6", "#ba68c8")
@@ -2513,6 +2681,7 @@ class DrumKitEditor(QGroupBox):
         self.host = host
         self.drum = drum
         self.selected_voice_id = selected_voice_id
+        self.plan_lanes = {}
         ensure_drum_voices(drum)
         self.setObjectName("drumKitEditor")
         self._build()
@@ -2538,10 +2707,17 @@ class DrumKitEditor(QGroupBox):
             self.host._queue_inspector_refresh("SOURCE")
 
     def _changed(self, voice, key, value):
+        with self.host.transport._state_lock:
+            if not any(block is self.drum for block in self.host.project.blocks):
+                return
+            self._change_voice(voice, key, value)
+
+    def _change_voice(self, voice, key, value):
         if key == "midi_channel":
             voice.midi_channel = max(1, min(16, int(value)))
             voice.midi_channel_override = voice.midi_channel != int(self.drum.midi_channel)
         elif key == "midi_note":
+            voice.parameters.setdefault("kit_role", voice_role(voice))
             voice.midi_note = max(0, min(127, int(value)))
         elif key == "midi_port":
             voice.midi_port = str(value or "")
@@ -2560,8 +2736,129 @@ class DrumKitEditor(QGroupBox):
         # the signal unwinds so its lane changes immediately between the
         # 16-step Pattern controls and the LIVE STREAM label.  The deferred
         # refresh also avoids deleting the emitting Qt button mid-signal.
-        if key == "mode" or voice.id == getattr(self.host, "selected_drum_voice_id", None):
+        if key in ("mode", "kit_role") or voice.id == getattr(self.host, "selected_drum_voice_id", None):
             self.host._queue_inspector_refresh()
+
+    def _set_config(self, key, value):
+        with self.host.transport._state_lock:
+            if not any(block is self.drum for block in self.host.project.blocks):
+                return
+            self.drum.parameters[key] = value
+            for voice in self.drum.drum_voices:
+                voice.parameters.setdefault("kit_role", voice_role(voice))
+            self.host.engine.regenerate(self.drum)
+        self.host._mark_dirty()
+        self.update_position()
+        if key == "kit_coordinated":
+            self.host._queue_inspector_refresh()
+
+    def _auto_roles(self):
+        # An explicit repair action also fixes files saved by stage 3 with
+        # every custom-note voice misclassified as Perc. Keep MIDI routing.
+        with self.host.transport._state_lock:
+            if not any(block is self.drum for block in self.host.project.blocks):
+                return
+            for voice in self.drum.drum_voices:
+                voice.parameters["kit_role"] = infer_role(voice.midi_note, voice.name)
+            self.host.engine.regenerate(self.drum)
+        self.host._mark_dirty()
+        self.host._queue_inspector_refresh()
+
+    def _view_changed(self, *_):
+        self.host._kit_output_view = self.view_selector.currentData() == "output"
+        self.update_position()
+
+    def _selected_voice(self):
+        return next((v for v in self.drum.drum_voices if v.id == self.selected_voice_id), None)
+
+    def _copy_voice(self, voice=None):
+        voice = voice or self._selected_voice()
+        if voice is None:
+            return
+        with self.host.transport._state_lock:
+            if self.host.get_entity(voice.id) is not voice:
+                return
+            self.host._drum_voice_clipboard = (voice.name, sound_snapshot(voice))
+        self.paste_voice_button.setEnabled(self._selected_voice() is not None)
+        self.host.set_message(f"Copied sound settings: {voice.name}")
+
+    def _paste_voice(self, voice=None, undo=False):
+        voice = voice or self._selected_voice()
+        clipboard = getattr(self.host, "_drum_voice_clipboard", None)
+        history = getattr(self.host, "_voice_paste_undo", {})
+        data = history.get(voice.id) if voice is not None and undo else (clipboard[1] if clipboard else None)
+        if voice is None or data is None:
+            return
+        with self.host.transport._state_lock:
+            if self.host.get_entity(voice.id) is not voice:
+                return
+            previous = sound_snapshot(voice)
+            self.host.engine.performance.stop(voice.id)
+            apply_sound(voice, data)
+            # Reset generator-specific memory while retaining the number of
+            # elapsed steps. Copying a walk/Markov source must not keep the
+            # previous sound's hidden state or restart the voice's clock.
+            events = int(self.host.engine.live_state.get(voice.id, {}).get("events", 0))
+            self.host.engine.live_state[voice.id] = {"events": events, "phase_index": events}
+            self.host.engine.live_rng.pop(voice.id, None)
+            if undo:
+                history.pop(voice.id, None)
+            else:
+                history[voice.id] = previous
+            self.host._voice_paste_undo = history
+            self.host.engine._kit_source_cache.pop(voice.id, None)
+            self.host.engine.regenerate(self.drum)
+        self.host._mark_dirty()
+        self.host.set_message(f"{'Restored' if undo else 'Pasted'} sound settings: {voice.name}")
+        self.host._queue_inspector_refresh()
+
+    def _voice_menu(self, voice, button, pos):
+        menu = QMenu(self)
+        menu.addAction("Copy sound settings", lambda: self._copy_voice(voice))
+        paste = menu.addAction("Paste sound settings", lambda: self._paste_voice(voice))
+        paste.setEnabled(getattr(self.host, "_drum_voice_clipboard", None) is not None)
+        undo = menu.addAction("Undo last paste", lambda: self._paste_voice(voice, undo=True))
+        undo.setEnabled(voice.id in getattr(self.host, "_voice_paste_undo", {}))
+        menu.exec(button.mapToGlobal(pos))
+
+    def update_position(self):
+        active = coordinated(self.drum)
+        self.style_selector.setEnabled(active)
+        self.phrase_length.setEnabled(active)
+        self.auto_roles.setEnabled(active)
+        self.meter_selector.setEnabled(active)
+        self.keep_beat.setEnabled(active)
+        self.new_variant.setEnabled(active)
+        self.view_selector.setEnabled(active)
+        for knob in self.creative_knobs:
+            knob.setEnabled(active)
+        roles = {voice_role(v) for v in self.drum.drum_voices if not v.muted}
+        missing = [label for label, candidates in (("Kick", {"kick"}), ("Snare/Clap", {"snare", "clap"}),
+                    ("Hat", {"closed_hat", "open_hat"})) if not roles & candidates]
+        self.role_warning.setText("Missing beat roles: " + ", ".join(missing) + ". Check Role or use Auto roles.")
+        self.role_warning.setVisible(active and bool(missing))
+        if not active:
+            self.plan_status.setText("Independent voice timing")
+            return
+        with self.host.transport._state_lock:
+            beat = self.host.engine.clock.position_beats
+            plan = self.host.engine.kit_coordinator.plan(self.drum, self.host.project.seed, beat)
+            slot = max(0, int(math.floor(beat / STEP_BEATS + 1e-8))) % plan.length
+            absolute_slot = max(0, int(math.floor(beat / STEP_BEATS + 1e-8)))
+            steps = plan.steps_per_bar
+            bar_start = slot // steps * steps
+            cursor = slot % steps if self.host.transport.running else -1
+            self.plan_ruler.set_cursor(cursor, steps)
+            for voice_id, lane in self.plan_lanes.items():
+                if self.view_selector.currentData() == "output":
+                    history = self.host.transport.drum_output_history.get(voice_id, {})
+                    absolute_bar = absolute_slot // steps * steps
+                    lane.set_output([history.get(absolute_bar + i) for i in range(steps)], cursor, plan.groups)
+                else:
+                    lane.set_plan([plan.at(voice_id, bar_start + i) for i in range(steps)],
+                                  cursor, plan.groups)
+        fill = any(plan.at(v.id, slot).fill for v in self.drum.drum_voices)
+        self.plan_status.setText(f"Bar {slot // steps + 1}/{plan.length // steps} · Step {slot % steps + 1:02d}/{steps}" + (" · FILL" if fill else ""))
 
     def _add_voice(self):
         ensure_drum_voices(self.drum)
@@ -2573,7 +2870,7 @@ class DrumKitEditor(QGroupBox):
             midi_port=str(self.drum.midi_port or ""), midi_note=35 + index,
             parameters={"pattern": "1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0",
                         "gate": .78, "live_gate": .65, "fill_density": 1.0,
-                        "event_probability": 1.0},
+                        "event_probability": 1.0, "kit_role": "perc"},
         )
         self.drum.drum_voices.append(voice)
         self.host._mark_dirty()
@@ -2586,19 +2883,83 @@ class DrumKitEditor(QGroupBox):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(7, 7, 7, 7)
         outer.setSpacing(5)
-        note = QLabel("Each voice has its own generator, MIDI channel, base note and output.")
+        note = QLabel("Select a voice to edit its generator below. Role is independent of its name and MIDI note.")
         note.setObjectName("muted")
         outer.addWidget(note)
+        arrangement = QHBoxLayout()
+        enabled = QCheckBox("Coordinated kit")
+        enabled.setObjectName("kitCoordinated")
+        enabled.setChecked(coordinated(self.drum))
+        enabled.setToolTip("Shared 1/16 grid in SEQ and LIVE. Anchors, hat exclusion and one fill lead. Free voices keep independent timing.")
+        enabled.toggled.connect(lambda checked: self._set_config("kit_coordinated", bool(checked)))
+        arrangement.addWidget(enabled)
+        self.style_selector = QComboBox()
+        self.style_selector.setObjectName("kitStyle")
+        for label, key in KIT_STYLES:
+            self.style_selector.addItem(label, key)
+        self.style_selector.setCurrentIndex(max(0, self.style_selector.findData(self.drum.parameters.get("kit_style", "straight"))))
+        self.style_selector.currentIndexChanged.connect(lambda _: self._set_config("kit_style", self.style_selector.currentData()))
+        arrangement.addWidget(self.style_selector)
+        self.meter_selector = QComboBox()
+        self.meter_selector.setObjectName("kitMeter")
+        self.meter_selector.setToolTip("Kit meter on a 1/16 grid. 6/8 and 12/8 use groups of three eighth notes; 7/8 uses 2+2+3. Other blocks keep their timing.")
+        for label, groups in KIT_METERS:
+            self.meter_selector.addItem(label, label.split(" · ")[0])
+        self.meter_selector.setCurrentIndex(max(0, self.meter_selector.findData(self.drum.parameters.get("kit_meter", "4/4"))))
+        self.meter_selector.currentIndexChanged.connect(lambda _: self._set_config("kit_meter", self.meter_selector.currentData()))
+        arrangement.addWidget(self.meter_selector)
+        arrangement.addWidget(QLabel("Phrase · bars"))
+        self.phrase_length = ContrastSpinBox()
+        self.phrase_length.setObjectName("kitPhraseBars")
+        self.phrase_length.setRange(1, 8)
+        self.phrase_length.setValue(phrase_bars(self.drum))
+        self.phrase_length.setFixedWidth(48)
+        self.phrase_length.valueChanged.connect(lambda value: self._set_config("kit_phrase_bars", int(value)))
+        arrangement.addWidget(self.phrase_length)
+        self.auto_roles = QPushButton("Auto roles")
+        self.auto_roles.setObjectName("kitAutoRoles")
+        self.auto_roles.setToolTip("Reassign roles from recognizable voice names first, then GM notes. Use this to repair older custom-note kits. MIDI notes, channels and outputs stay as configured.")
+        self.auto_roles.clicked.connect(self._auto_roles)
+        arrangement.addWidget(self.auto_roles)
+        arrangement.addStretch(1)
+        self.plan_status = QLabel()
+        self.plan_status.setObjectName("kitPosition")
+        self.plan_status.setFixedWidth(210)
+        arrangement.addWidget(self.plan_status)
+        outer.addLayout(arrangement)
+        self.role_warning = QLabel()
+        self.role_warning.setObjectName("kitRoleWarning")
+        self.role_warning.setWordWrap(True)
+        outer.addWidget(self.role_warning)
         grid = QGridLayout()
         grid.setHorizontalSpacing(4); grid.setVerticalSpacing(3)
-        headers = ["Voice", "M", "Algorithm", "Mode", "Ch", "Note", "Pattern / LIVE stream", "Out"]
+        headers = ["Voice", "M", "Role", "Algorithm", "Mode", "Ch", "Note", "Kit plan / Source", "Out"]
         ports = list(getattr(self.host, "_midi_output_names", []) or [])
         if not ports and not hasattr(self.host, "_midi_output_names"):
             ports, _ = get_midi_output_names()
             self.host._midi_output_names = list(ports)
         for column, label in enumerate(headers):
             title = QLabel(label); title.setObjectName("knobLabel")
-            grid.addWidget(title, 0, column)
+            if column == 7:
+                header = QWidget(); header_layout = QVBoxLayout(header)
+                header_layout.setContentsMargins(0, 0, 0, 0); header_layout.setSpacing(0)
+                title_row = QHBoxLayout(); title_row.setContentsMargins(0, 0, 0, 0); title_row.setSpacing(3)
+                title.setText("Kit")
+                title_row.addWidget(title)
+                self.view_selector = QComboBox(); self.view_selector.setObjectName("kitView")
+                self.view_selector.addItem("Plan", "plan"); self.view_selector.addItem("Output", "output")
+                self.view_selector.setFixedWidth(76)
+                self.view_selector.setCurrentIndex(1 if getattr(self.host, "_kit_output_view", False) else 0)
+                self.view_selector.setToolTip("Plan: arrangement before processing. Output: accepted generated events after processing, probability and mute, even without a MIDI port. Grey = not visited, dash = rest, bar height = velocity. Coordinated voices only; this is not MIDI input feedback.")
+                self.view_selector.currentIndexChanged.connect(self._view_changed)
+                title_row.addWidget(self.view_selector); title_row.addStretch(1)
+                header_layout.addLayout(title_row)
+                self.plan_ruler = KitStepRuler()
+                self.plan_ruler.setVisible(coordinated(self.drum))
+                header_layout.addWidget(self.plan_ruler)
+                grid.addWidget(header, 0, column)
+            else:
+                grid.addWidget(title, 0, column, Qt.AlignBottom)
         for row, voice in enumerate(self.drum.drum_voices, 1):
             color = self.VOICE_COLORS[(row - 1) % len(self.VOICE_COLORS)]
             name = QPushButton(f"●  {voice.name}"); name.setFlat(True); name.setCursor(Qt.PointingHandCursor)
@@ -2609,6 +2970,8 @@ class DrumKitEditor(QGroupBox):
                 name.setProperty("selected", True); name.setStyleSheet(
                     f"QPushButton {{ color:{color}; font-weight:700; text-align:left; padding:2px 4px; border:1px solid {color}; border-radius:3px; }}")
             name.clicked.connect(lambda _=False, v=voice: self.voice_selected.emit(int(v.id)))
+            name.setContextMenuPolicy(Qt.CustomContextMenu)
+            name.customContextMenuRequested.connect(lambda pos, v=voice, w=name: self._voice_menu(v, w, pos))
             grid.addWidget(name, row, 0)
             mute = QPushButton("M"); mute.setCheckable(True); mute.setChecked(bool(voice.muted)); mute.setFixedWidth(25)
             mute.setAccessibleName(f"Mute {voice.name}")
@@ -2616,18 +2979,22 @@ class DrumKitEditor(QGroupBox):
             grid.addWidget(mute, row, 1)
             algorithm = QComboBox(); setup_algorithm_combo(algorithm, voice.algorithm); algorithm.setFixedWidth(110)
             algorithm.currentTextChanged.connect(lambda value, v=voice: self._changed(v, "algorithm", value))
-            grid.addWidget(algorithm, row, 2)
+            grid.addWidget(algorithm, row, 3)
             mode = ModeSwitch(voice.mode); mode.changed.connect(lambda value, v=voice: self._changed(v, "mode", value))
-            grid.addWidget(mode, row, 3)
+            grid.addWidget(mode, row, 4)
             channel = ContrastSpinBox(); channel.setRange(1, 16); channel.setValue(int(voice.midi_channel)); channel.setFixedWidth(48)
             channel.setToolTip("Follows the DRUM channel until changed here; editing creates a voice override")
             channel.valueChanged.connect(lambda value, v=voice: self._changed(v, "midi_channel", value))
-            grid.addWidget(channel, row, 4)
+            grid.addWidget(channel, row, 5)
             base_note = ContrastSpinBox(); base_note.setRange(0, 127); base_note.setValue(int(voice.midi_note)); base_note.setFixedWidth(54)
             base_note.valueChanged.connect(lambda value, v=voice: self._changed(v, "midi_note", value))
-            grid.addWidget(base_note, row, 5)
+            grid.addWidget(base_note, row, 6)
             lane = QHBoxLayout(); lane.setContentsMargins(0, 0, 0, 0); lane.setSpacing(2)
-            if voice.mode == "LIVE":
+            if coordinated(self.drum, voice):
+                plan_lane = KitPlanLane()
+                self.plan_lanes[voice.id] = plan_lane
+                lane.addWidget(plan_lane)
+            elif voice.mode == "LIVE":
                 stream = QLabel("LIVE STREAM  ·  Prob / Min / Max / Phase")
                 stream.setObjectName("muted"); lane.addWidget(stream)
             else:
@@ -2637,7 +3004,7 @@ class DrumKitEditor(QGroupBox):
                     step.setToolTip(f"{voice.name} step {index + 1}")
                     step.toggled.connect(lambda checked, v=voice, i=index: self._set_pattern(v, i, checked))
                     lane.addWidget(step)
-            cell = QWidget(); cell.setLayout(lane); grid.addWidget(cell, row, 6)
+            cell = QWidget(); cell.setLayout(lane); grid.addWidget(cell, row, 7)
             output = QComboBox(); output.addItem("(none)")
             output.addItems(ports)
             current_port = str(voice.midi_port or "")
@@ -2645,236 +3012,476 @@ class DrumKitEditor(QGroupBox):
                 output.setCurrentText(current_port)
             output.setFixedWidth(92)
             output.currentTextChanged.connect(lambda value, v=voice: self._changed(v, "midi_port", "" if value == "(none)" else value))
-            grid.addWidget(output, row, 7)
+            grid.addWidget(output, row, 8)
+            role = QComboBox()
+            role.setObjectName(f"kitRole_{voice.id}")
+            role.setAccessibleName(f"Role for {voice.name}")
+            role.setToolTip("Musical role in the shared kit. Free uses independent timing and generation.")
+            for label, key in KIT_ROLES:
+                role.addItem(label, key)
+            role.setCurrentIndex(role.findData(voice_role(voice)))
+            role.setFixedWidth(92)
+            role.currentIndexChanged.connect(lambda _, v=voice, w=role: self._changed(v, "kit_role", w.currentData()))
+            grid.addWidget(role, row, 2)
+        grid.setColumnStretch(7, 1)
         outer.addLayout(grid)
 
         controls = QHBoxLayout(); controls.setSpacing(8)
-        for label, key, default in (("Density", "kit_density", .75), ("Swing", "kit_swing", .0),
-                                    ("Humanize", "kit_humanize", .10), ("Fill", "kit_fill", .08)):
+        for key, default in KIT_DEFAULTS.items():
+            label = key.removeprefix("kit_").title()
             controls.addWidget(QLabel(label))
-            knob = ParamKnob(float(self.drum.parameters.get(key, default)), default=default)
-            knob.setFixedWidth(54); knob.changed.connect(lambda value, k=key: self._changed(self.drum, k, float(value)))
+            knob = ParamKnob(kit_value(self.drum, key), default=default)
+            knob.bind_parameter(self.drum.id, key)
+            knob.setObjectName(key)
+            knob.setAccessibleName(f"Kit {label}")
+            knob.setToolTip(KIT_TOOLTIPS[key])
+            knob.setFixedWidth(54)
+            knob.changed.connect(lambda value, k=key: self.host._set_drum_kit_parameter(self.drum, k, float(value)))
             controls.addWidget(knob)
         controls.addStretch(1)
+        self.copy_voice_button = QPushButton("Copy voice")
+        self.copy_voice_button.setObjectName("copyDrumVoice")
+        self.copy_voice_button.setEnabled(self._selected_voice() is not None)
+        self.copy_voice_button.setToolTip("Select a voice, then copy its generator, parameters and processing. Right-click any voice for Copy/Paste/Undo.")
+        self.copy_voice_button.clicked.connect(lambda: self._copy_voice())
+        controls.addWidget(self.copy_voice_button)
+        self.paste_voice_button = QPushButton("Paste voice")
+        self.paste_voice_button.setObjectName("pasteDrumVoice")
+        self.paste_voice_button.setEnabled(self._selected_voice() is not None and getattr(self.host, "_drum_voice_clipboard", None) is not None)
+        self.paste_voice_button.setToolTip("Replace selected voice's sound settings. Keep its name, role, mode, mute and MIDI routing. Right-click the voice to undo the last paste. The current voice technique stops.")
+        self.paste_voice_button.clicked.connect(lambda: self._paste_voice())
+        controls.addWidget(self.paste_voice_button)
         add = QPushButton("+ ADD VOICE"); add.setObjectName("inspectorAddButton"); add.clicked.connect(self._add_voice)
         controls.addWidget(add)
         outer.addLayout(controls)
+        creative = QHBoxLayout(); creative.setSpacing(8)
+        self.creative_knobs = []
+        descriptions = {
+            "kit_complexity": ("Complexity", "Adds kick, snare, hat and percussion hits between the core beats."),
+            "kit_syncopation": ("Syncopation", "Shifts added hits towards offbeats. Raise Complexity or Toms to hear it."),
+            "kit_tom_activity": ("Toms", "Adds tom hits throughout the bar, even when the source pattern is silent. Requires a voice with the Tom role."),
+            "kit_variation": ("Variation", "Chooses new weak-beat patterns across bars and phrases; zero repeats the same added pattern. Core beats stay stable."),
+        }
+        for key, default in CREATIVE_DEFAULTS.items():
+            label, tooltip = descriptions[key]
+            creative.addWidget(QLabel(label))
+            knob = ParamKnob(creative_value(self.drum, key), default=default)
+            knob.bind_parameter(self.drum.id, key)
+            knob.setObjectName(key); knob.setAccessibleName(f"Kit {label}")
+            knob.setToolTip(tooltip); knob.setFixedWidth(54)
+            knob.changed.connect(lambda value, k=key: self.host._set_drum_kit_parameter(self.drum, k, float(value)))
+            creative.addWidget(knob); self.creative_knobs.append(knob)
+        creative.addStretch(1)
+        self.keep_beat = QCheckBox("Keep beat")
+        self.keep_beat.setObjectName("kitKeepBeat")
+        self.keep_beat.setChecked(bool(self.drum.parameters.get("kit_protect_anchors", True)))
+        self.keep_beat.setToolTip("Restore core beats after rhythm processing and keep the role mask. Disable to let Rotate, Delay and Clock Divide reshape the beat. Shared fill and hat exclusions remain active.")
+        self.keep_beat.toggled.connect(lambda checked: self._set_config("kit_protect_anchors", bool(checked)))
+        creative.addWidget(self.keep_beat)
+        self.new_variant = QPushButton("New variant")
+        self.new_variant.setObjectName("kitNewVariant")
+        self.new_variant.setToolTip("Generate another reproducible kit pattern with the same meter, roles and settings.")
+        self.new_variant.clicked.connect(lambda: self._set_config("kit_variant", int(self.drum.parameters.get("kit_variant", 0)) + 1))
+        creative.addWidget(self.new_variant)
+        outer.addLayout(creative)
+        self.update_position()
 
 
-class AddMutatorDialog(QDialog):
-    def __init__(self, parent=None):
+class MutatorInlineControls(QWidget):
+    """One mutation, editable in place without an add/edit dialog."""
+    def __init__(self, mutator, block, host, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Add mutator")
-        self.setMinimumWidth(360)
-        form = QFormLayout(self)
-        self.kind = QComboBox(); self.kind.addItems(MUTATORS)
-        self.target = QComboBox(); self.target.addItems(["rhythm", "pitch", "velocity"]); self.target.setCurrentText("pitch")
-        self.amount = ParamSlider(0.5)
-        form.addRow("Mutator", self.kind)
-        form.addRow("Target", self.target)
-        form.addRow("Amount", self.amount)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
+        self.mutator, self.block, self.host = mutator, block, host
+        self.setObjectName("mutatorRow")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 2, 0, 2)
+        row.setSpacing(6)
+        self.kind = QComboBox()
+        self.kind.addItems(MUTATORS)
+        self.kind.setCurrentText(mutator.name)
+        self.kind.setMinimumWidth(118)
+        self.kind.setAccessibleName("Mutator type")
+        self.target = QComboBox()
+        self.target.addItems(["rhythm", "pitch", "velocity", "timing"])
+        self.target.setCurrentText(mutator.target)
+        self.target.setMinimumWidth(80)
+        self.target.setAccessibleName("Mutator target")
+        self.amount = ParamKnob(mutator.amount, default=.5)
+        self.amount.setFixedWidth(54)
+        self.amount.setAccessibleName("Mutator amount")
+        self.remove = QPushButton("×")
+        self.remove.setObjectName("cardDelete")
+        self.remove.setFixedSize(24, 24)
+        self.remove.setToolTip("Remove mutator")
+        self.remove.setAccessibleName("Remove mutator")
+        row.addWidget(self.kind)
+        row.addWidget(self.target)
+        row.addWidget(self.amount, 0, Qt.AlignTop)
+        row.addStretch(1)
+        row.addWidget(self.remove, 0, Qt.AlignTop)
+        self.kind.currentTextChanged.connect(lambda value: self._changed("name", value))
+        self.target.currentTextChanged.connect(lambda value: self._changed("target", value))
+        self.amount.changed.connect(lambda value: self._changed("amount", float(value)))
+        self.remove.clicked.connect(self._remove)
 
+    def _changed(self, field, value):
+        # A queued rebuild may leave an old row alive for one event-loop turn.
+        if self.host.get_entity(self.block.id) is not self.block:
+            return
+        if not any(item is self.mutator for item in self.block.mutators):
+            return
+        setattr(self.mutator, field, value)
+        self.host._mutator_editor_changed(self.block)
+
+    def _remove(self):
+        index = next((i for i, item in enumerate(self.block.mutators) if item is self.mutator), -1)
+        if index >= 0 and self.host.get_entity(self.block.id) is self.block:
+            self.host.remove_mutator(self.block, index)
+
+
+class RelationInlineControls(QFrame):
+    """An editable signal path, bound to a relation object rather than its index."""
+    def __init__(self, relation, editor):
+        super().__init__(editor)
+        self.relation, self.editor = relation, editor
+        self._updating = False
+        self.setObjectName("relationRow")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(2)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+
+        self.fields = {}
+        self.captions = {}
+        def add_field(label, widget, stretch=1):
+            container = QWidget()
+            container.setObjectName('relationControlArea')
+            cell = QVBoxLayout(container)
+            cell.setContentsMargins(0, 0, 0, 0)
+            cell.setSpacing(2)
+            caption = QLabel(label)
+            caption.setObjectName("muted")
+            cell.addWidget(caption, 0, Qt.AlignTop)
+            control_area = QWidget()
+            control_area.setObjectName("relationControlArea")
+            control_area.setFixedHeight(74)
+            control_layout = QVBoxLayout(control_area)
+            control_layout.setContentsMargins(0, 0, 0, 0)
+            alignment = Qt.AlignCenter if isinstance(widget, Knob) else Qt.AlignVCenter
+            control_layout.addWidget(widget, 0, alignment)
+            cell.addWidget(control_area)
+            widget.setAccessibleName(f"Relation {relation.id}: {label}")
+            row.addWidget(container, stretch)
+            self.fields[label] = container
+            self.captions[label] = caption
+
+        self.source = QComboBox()
+        self.dest = QComboBox()
+        for combo in (self.source, self.dest):
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(6)
+            combo.setIconSize(QSize(12, 12))
+        self.source_part = QComboBox(); self.source_part.addItems(PARTS)
+        self.algorithm = QComboBox(); self.algorithm.addItems(RELATIONS)
+        self.dest_part = QComboBox(); self.dest_part.addItems(PARTS)
+        self.amount = ParamKnob(.5, default=.5)
+        self.curve = QComboBox(); self.curve.addItems(["Linear", "Exponential", "Logarithmic", "Threshold", "Quantize"])
+        self.delay = QComboBox()
+        for label, value in (("Immediate", 0), ("+1 event", 1), ("+2 events", 2), ("+4 events", 4), ("+8 events", 8)):
+            self.delay.addItem(label, value)
+        self.probability = ParamKnob(1.0, default=1.0)
+        self.enabled = QCheckBox("Enabled")
+        self.enabled.setAccessibleName(f"Enable relation {relation.id}")
+        add_field("Source", self.source, 2)
+        add_field("Output", self.source_part)
+        add_field("Operation", self.algorithm)
+        add_field("Destination", self.dest, 2)
+        add_field("Input", self.dest_part)
+        add_field("Amount", self.amount)
+        add_field("Curve", self.curve)
+        add_field("Delay", self.delay)
+        add_field("Probability", self.probability)
+        add_field("State", self.enabled)
+        actions = QVBoxLayout()
+        self.duplicate = QPushButton("COPY")
+        self.duplicate.setToolTip("Duplicate this relation")
+        self.duplicate.setAccessibleName(f"Duplicate relation {relation.id}")
+        self.remove = QPushButton("×")
+        self.remove.setObjectName("cardDelete")
+        self.remove.setToolTip("Remove this relation")
+        self.remove.setAccessibleName(f"Remove relation {relation.id}")
+        actions.addWidget(self.duplicate)
+        actions.addWidget(self.remove)
+        row.addLayout(actions)
+        layout.addLayout(row)
+        self.dialogue = DialogueControls(self, ValueStepper)
+        layout.addWidget(self.dialogue)
+        self.summary = QLabel()
+        self.summary.setObjectName("muted")
+        self.summary.setWordWrap(True)
+        layout.addWidget(self.summary)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.sync()
+        for combo in (self.source, self.dest, self.source_part, self.dest_part, self.algorithm, self.curve, self.delay):
+            combo.currentIndexChanged.connect(self._changed)
+        self.amount.changed.connect(self._changed)
+        self.probability.changed.connect(self._changed)
+        self.enabled.toggled.connect(self._changed)
+        self.remove.clicked.connect(lambda: editor.delete_relation(relation))
+        self.duplicate.clicked.connect(lambda: editor.duplicate_relation(relation))
+
+    def sync(self):
+        self._updating = True
+        try:
+            relation = self.relation
+            for combo, selected in ((self.source, relation.source_block), (self.dest, relation.destination_block)):
+                combo.clear()
+                for block in self.editor.project.blocks:
+                    swatch = QPixmap(12, 12)
+                    swatch.fill(QColor(block_color(self.editor.project, block)))
+                    combo.addItem(QIcon(swatch), block.name, block.id)
+                    combo.setItemData(combo.count() - 1, f"{block.name} · {block.block_type} · ID {block.id}", Qt.ToolTipRole)
+                if combo.findData(selected) < 0:
+                    combo.addItem(f"Missing block {selected}", selected)
+                combo.setCurrentIndex(combo.findData(selected))
+            self.source_part.setCurrentText(relation.source_part)
+            self.dest_part.setCurrentText(relation.destination_part)
+            self.algorithm.setCurrentText(relation.algorithm)
+            self.amount.setValue(relation.amount)
+            self.curve.setCurrentText(relation.curve)
+            if self.delay.findData(relation.delay) < 0:
+                self.delay.addItem(f"+{relation.delay} events", relation.delay)
+            self.delay.setCurrentIndex(self.delay.findData(relation.delay))
+            self.probability.setValue(relation.probability)
+            self.enabled.setChecked(relation.enabled)
+        finally:
+            self._updating = False
+        theme = active_theme()
+        self.setStyleSheet(f"QFrame#relationRow {{ background:{theme.card}; border:1px solid {theme.border}; border-radius:5px; }}"
+                           "QWidget#relationControlArea { background:transparent; border:0; }")
+        self.update_summary()
+        self.dialogue.sync()
+        self._sync_operation()
+
+    def _sync_operation(self):
+        dialogue = self.relation.algorithm == 'Dialogue'
+        for name in ('Output', 'Input', 'Curve', 'Delay'):
+            self.fields[name].setVisible(not dialogue)
+        self.captions['Amount'].setText('Separation' if dialogue else 'Amount')
+        self.captions['Probability'].setText('Cycle chance' if dialogue else 'Probability')
+        self.amount.setToolTip('1: strict turns; 0: bypass; intermediate values soften the other instrument.' if dialogue else 'Relation amount')
+        self.probability.setToolTip('Probability of using Dialogue for an entire cycle.' if dialogue else 'Relation event probability')
+        self.dialogue.setVisible(dialogue)
+        if dialogue:
+            source = self.editor.host.get_block(self.relation.source_block)
+            destination = self.editor.host.get_block(self.relation.destination_block)
+            if source and destination:
+                self.dialogue.timeline.colors = (block_color(self.editor.project, source), block_color(self.editor.project, destination))
+            self.dialogue.update_runtime()
+
+    def update_summary(self):
+        relation = self.relation
+        self.source.setToolTip(self.source.currentText())
+        self.dest.setToolTip(self.dest.currentText())
+        state = "ON" if relation.enabled else "OFF"
+        if relation.algorithm == 'Dialogue':
+            from instrument_dialogue import settings
+            config = settings(relation)
+            self.summary.setText(f"#{relation.id} · {state}   {self.source.currentText()} calls → {self.dest.currentText()} responds · "
+                                 f"{config['call_bars']} + {config['response_bars']} bars · {config['reply']} · own rhythm")
+            return
+        self.summary.setText(f"#{relation.id} · {state}   {self.source.currentText()} · {parameter_label(relation.source_part)}"
+                             f"  →  {relation.algorithm}  →  {self.dest.currentText()} · {parameter_label(relation.destination_part)}")
+
+    def _changed(self, *_):
+        if self._updating or not any(item is self.relation for item in self.editor.host.project.relations):
+            return
+        if self.source.currentData() is None or self.dest.currentData() is None:
+            return
+        with self.editor.host.transport._state_lock:
+            relation = self.relation
+            relation.source_block = int(self.source.currentData())
+            relation.source_part = self.source_part.currentText()
+            relation.algorithm = self.algorithm.currentText()
+            relation.destination_block = int(self.dest.currentData())
+            relation.destination_part = self.dest_part.currentText()
+            relation.amount = float(self.amount.value())
+            relation.curve = self.curve.currentText()
+            relation.delay = int(self.delay.currentData() or 0)
+            relation.probability = float(self.probability.value())
+            relation.enabled = self.enabled.isChecked()
+            self.editor.host.engine.apply_relations()
+        self.editor.host._mark_dirty()
+        self._sync_operation()
+        self.update_summary()
+        self.editor._refresh_builtin_status()
+        self.editor._apply_filter(self.editor.filter_edit.text())
 
 
 class RelationGraphEditor(QWidget):
-    """Stable, non-node relation editor.
-
-    v74 deliberately removes the old node/port/embedded-widget graph.  A
-    relation is model data, not a QWidget.  The UI therefore consists of a
-    compact relation table and one inspector for the selected relation.  This
-    makes selection, editing and deletion independent from widget lifetime and
-    avoids embedded graphics-widget teardown during signal callbacks.
-    """
-
-    COLUMNS = ("", "Source", "Output", "Operation", "Destination", "Input", "Amount", "State")
-
+    """Scrollable relation inspector: every route is edited in its own row."""
     def __init__(self, host, parent=None):
         super().__init__(parent)
-        self.host = host
-        self.project = host.project
-        self._updating = False
-        self._selected_index = -1
-
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(6, 6, 6, 6)
-        lay.setSpacing(6)
-
+        self.host, self.project = host, host.project
+        self.rows = []
+        self._rebuild_pending = False
+        self._focus_relation = None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(6)
         head = QHBoxLayout()
-        title = QLabel("RELATIONS")
-        title.setObjectName("pageTitle")
+        title = QLabel("RELATIONS"); title.setObjectName("pageTitle")
         head.addWidget(title)
-        info = QLabel("Define parameter flow between blocks. Select a relation to edit it below.")
+        info = QLabel("Add a row, choose blocks and adjust the connection.")
         info.setObjectName("muted")
         head.addWidget(info, 1)
         self.filter_edit = QLineEdit()
         self.filter_edit.setPlaceholderText("Filter relations…")
+        self.filter_edit.setMaximumWidth(240)
         self.filter_edit.textChanged.connect(self._apply_filter)
-        head.addWidget(self.filter_edit, 1)
-        self.add_button = QPushButton("+ RELATION")
-        self.add_button.clicked.connect(self.host.add_relation)
-        head.addWidget(self.add_button)
-        self.delete_button = QPushButton("DELETE")
-        self.delete_button.setEnabled(False)
-        self.delete_button.clicked.connect(self.delete_selected_relation)
-        head.addWidget(self.delete_button)
-        self.duplicate_button = QPushButton("DUPLICATE")
-        self.duplicate_button.setEnabled(False)
-        self.duplicate_button.clicked.connect(self.duplicate_selected_relation)
-        head.addWidget(self.duplicate_button)
-        lay.addLayout(head)
-        builtin = QLabel("Built-in role relations are active when no equivalent visible route exists: "
-                         "DRUM → BASS groove mask and CHORD → MELODY chord anchor. An equivalent "
-                         "enabled route replaces the built-in transform instead of stacking with it.")
-        builtin.setObjectName("muted")
-        builtin.setWordWrap(True)
-        lay.addWidget(builtin)
-        self.builtin_status = QLabel()
-        self.builtin_status.setObjectName("muted")
+        head.addWidget(self.filter_edit)
+        layout.addLayout(head)
+        builtin = QLabel("Built-in routes: DRUM → BASS groove mask · CHORD → MELODY chord anchor. "
+                         "An equivalent enabled route replaces the built-in transform.")
+        builtin.setObjectName("muted"); builtin.setWordWrap(True)
+        layout.addWidget(builtin)
+        self.builtin_status = QLabel(); self.builtin_status.setObjectName("muted")
         self.builtin_status.setWordWrap(True)
-        lay.addWidget(self.builtin_status)
+        layout.addWidget(self.builtin_status)
+        inspector = QGroupBox("RELATION INSPECTOR")
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(6, 8, 6, 6)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.page = QWidget()
+        self.rows_layout = QVBoxLayout(self.page)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout.setSpacing(6)
+        self.rows_layout.setAlignment(Qt.AlignTop)
+        self.empty = QLabel("No relations yet. Click + Add to create a connection.")
+        self.empty.setObjectName("muted")
+        self.rows_layout.addWidget(self.empty)
+        self.scroll.setWidget(self.page)
+        inspector_layout.addWidget(self.scroll, 1)
+        footer = QHBoxLayout()
+        self.add_button = QPushButton("+ Add")
+        self.add_button.setObjectName("inspectorAddButton")
+        self.add_button.setFixedHeight(26)
+        self.add_button.setAccessibleName("Add relation")
+        self.add_button.clicked.connect(host.add_relation)
+        footer.addWidget(self.add_button)
+        self.dialogue_button = QPushButton('+ Dialogue')
+        self.dialogue_button.setObjectName('inspectorAddButton')
+        self.dialogue_button.setFixedHeight(26)
+        self.dialogue_button.setAccessibleName('Add Dialogue')
+        self.dialogue_button.clicked.connect(lambda: host.add_relation('Dialogue'))
+        footer.addWidget(self.dialogue_button)
+        footer.addStretch(1)
+        self.count_label = QLabel(); self.count_label.setObjectName("muted")
+        footer.addWidget(self.count_label)
+        inspector_layout.addLayout(footer)
+        layout.addWidget(inspector, 1)
 
-        self.table = QTableWidget(0, len(self.COLUMNS), self)
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.table.setAlternatingRowColors(True)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setMinimumHeight(180)
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)
-        self.table.itemSelectionChanged.connect(self._selection_changed)
-        lay.addWidget(self.table, 3)
-
-        inspector_box = QGroupBox("RELATION INSPECTOR")
-        inspector_layout = QVBoxLayout(inspector_box)
-        inspector_layout.setContentsMargins(8, 8, 8, 8)
-        inspector_layout.setSpacing(6)
-
-        # All editable relation fields deliberately live on one horizontal row.
-        # Relations are read as a single signal path, so the editor should have
-        # the same visual grammar: Source -> Operation -> Destination, with the
-        # transform controls between/along that path.
-        row = QHBoxLayout()
-        row.setSpacing(6)
-
-        def add_field(label, widget, stretch=1):
-            cell = QVBoxLayout()
-            cell.setSpacing(2)
-            caption = QLabel(label)
-            caption.setObjectName("muted")
-            cell.addWidget(caption)
-            # Captions stay on one line at the top, controls on one line at
-            # the bottom, even though knobs are taller than combo boxes.
-            cell.addStretch(1)
-            if isinstance(widget, Knob):
-                cell.addWidget(widget, 0, Qt.AlignHCenter)
-            else:
-                cell.addWidget(widget)
-            widget.setAccessibleName(label)
-            row.addLayout(cell, stretch)
-
-        self.source = QComboBox()
-        self.source_part = QComboBox(); self.source_part.addItems(PARTS)
-        self.algorithm = QComboBox(); self.algorithm.addItems(RELATIONS)
-        self.dest = QComboBox()
-        self.dest_part = QComboBox(); self.dest_part.addItems(PARTS)
-        self.curve = QComboBox(); self.curve.addItems(["Linear", "Exponential", "Logarithmic", "Threshold", "Quantize"])
-        self.delay = QComboBox(); self.delay.addItem("Immediate", 0); self.delay.addItem("+1 event", 1); self.delay.addItem("+2 events", 2); self.delay.addItem("+4 events", 4); self.delay.addItem("+8 events", 8)
-        self.probability = ParamSlider(1.0)
-        self.enabled = QCheckBox("Enabled")
-        self.amount = ParamSlider(0.5)
-        self.summary = QLabel("No relation selected")
-        self.summary.setObjectName("muted")
-        self.summary.setWordWrap(False)
-        self._populate_blocks()
-        add_field("Source", self.source, 2)
-        add_field("Output", self.source_part, 2)
-        add_field("Operation", self.algorithm, 2)
-        add_field("Destination", self.dest, 2)
-        add_field("Input", self.dest_part, 2)
-        add_field("Amount", self.amount, 1)
-        add_field("Curve", self.curve, 2)
-        add_field("Delay", self.delay, 2)
-        add_field("Probability", self.probability, 1)
-        state_cell = QVBoxLayout()
-        state_cell.setSpacing(2)
-        state_caption = QLabel("State")
-        state_caption.setObjectName("muted")
-        state_cell.addWidget(state_caption)
-        state_cell.addStretch(1)
-        state_cell.addWidget(self.enabled)
-        row.addLayout(state_cell, 1)
-        inspector_layout.addLayout(row)
-        inspector_layout.addWidget(self.summary)
-        lay.addWidget(inspector_box, 2)
-
-        for widget in (self.source, self.source_part, self.algorithm, self.dest, self.dest_part, self.curve, self.delay):
-            widget.currentIndexChanged.connect(self._inspector_changed)
-        self.amount.changed.connect(self._inspector_changed)
-        self.probability.changed.connect(self._inspector_changed)
-        self.enabled.toggled.connect(self._inspector_changed)
-        self._set_inspector_enabled(False)
-
-    def _populate_blocks(self):
-        self._updating = True
-        try:
-            self.source.clear(); self.dest.clear()
-            for block in self.project.blocks:
-                self.source.addItem(block.name, block.id)
-                self.dest.addItem(block.name, block.id)
-        finally:
-            self._updating = False
-
-    def _set_inspector_enabled(self, enabled):
-        for widget in (self.source, self.source_part, self.algorithm, self.dest, self.dest_part, self.curve, self.delay, self.amount, self.probability, self.enabled):
-            widget.setEnabled(bool(enabled))
-        self.delete_button.setEnabled(bool(enabled))
-        self.duplicate_button.setEnabled(bool(enabled))
-
-    def _selection_changed(self):
-        rows = self.table.selectionModel().selectedRows()
-        index = rows[0].row() if rows else -1
-        self.select_relation(index)
-
-    def select_relation(self, index):
-        if index < 0 or index >= len(self.project.relations):
-            self._selected_index = -1
-            self._set_inspector_enabled(False)
-            self.summary.setText("No relation selected")
+    def _queue_rebuild(self, focus=None):
+        self._focus_relation = focus
+        if self._rebuild_pending:
             return
-        self._selected_index = index
-        relation = self.project.relations[index]
-        self._updating = True
-        try:
-            self.source.setCurrentIndex(max(0, self.source.findData(relation.source_block)))
-            self.dest.setCurrentIndex(max(0, self.dest.findData(relation.destination_block)))
-            self.source_part.setCurrentText(relation.source_part)
-            self.dest_part.setCurrentText(relation.destination_part)
-            self.algorithm.setCurrentText(relation.algorithm)
-            self.amount.setValue(float(relation.amount))
-            self.curve.setCurrentText(getattr(relation, "curve", "Linear"))
-            self.delay.setCurrentIndex(max(0, self.delay.findData(int(getattr(relation, "delay", 0)))))
-            self.probability.setValue(float(getattr(relation, "probability", 1.0)))
-            self.enabled.setChecked(bool(getattr(relation, "enabled", True)))
-        finally:
-            self._updating = False
-        self._set_inspector_enabled(True)
-        self._update_summary(relation)
+        self._rebuild_pending = True
 
-    def _update_summary(self, relation):
-        source = self._block_name(relation.source_block)
-        dest = self._block_name(relation.destination_block)
-        self.summary.setText(
-            f"{source} · {parameter_label(relation.source_part)}  →  "
-            f"{relation.algorithm}  →  {dest} · {parameter_label(relation.destination_part)}"
-        )
+        def apply():
+            self._rebuild_pending = False
+            focus, self._focus_relation = self._focus_relation, None
+            self.rebuild(self.host.project)
+            if focus is not None:
+                # Let the scroll area adopt the new content height first.
+                def reveal():
+                    row = next((row for row in self.rows if row.relation is focus), None)
+                    if row is not None:
+                        row.source.setFocus()
+                        self.scroll.ensureWidgetVisible(row)
+                QTimer.singleShot(0, reveal)
+        QTimer.singleShot(0, apply)
+
+    def add_relation(self, relation):
+        with self.host.transport._state_lock:
+            if not getattr(relation, "id", 0):
+                relation.id = next_relation_id(self.project)
+            self.project.relations.append(relation)
+            self.host.engine.apply_relations()
+        self.host._mark_dirty()
+        self.filter_edit.clear()
+        self._queue_rebuild(relation)
+
+    def delete_relation(self, relation):
+        index = next((i for i, item in enumerate(self.project.relations) if item is relation), -1)
+        if index < 0:
+            return
+        with self.host.transport._state_lock:
+            remove_relation(self.project, index)
+            self.host.engine.apply_relations()
+        self.host._mark_dirty()
+        self._queue_rebuild()
+
+    def duplicate_relation(self, relation):
+        index = next((i for i, item in enumerate(self.project.relations) if item is relation), -1)
+        if index < 0:
+            return
+        with self.host.transport._state_lock:
+            duplicate = duplicate_relation(self.project, index)
+            self.host.engine.apply_relations()
+        self.host._mark_dirty()
+        self.filter_edit.clear()
+        self._queue_rebuild(duplicate)
+
+    def _apply_filter(self, text):
+        query = str(text or "").strip().lower()
+        visible = 0
+        for row in self.rows:
+            haystack = " ".join((row.summary.text(), row.curve.currentText(), row.delay.currentText())).lower()
+            match = not query or query in haystack
+            row.setVisible(match)
+            visible += int(match)
+        self.empty.setVisible(not visible)
+        self.empty.setText("No matching relations." if self.rows else "No relations yet. Click + Add to create a connection.")
+        self.count_label.setText(f"{visible} / {len(self.rows)} relations" if query else f"{len(self.rows)} relations")
+
+    def validate_relations(self):
+        return validate_relations(self.project)
+
+    def rebuild(self, project):
+        self.project = project
+        # Reuse surviving rows: edits, block renames and colour changes do not
+        # destroy the focused controls or reassign their relation identity.
+        previous = {id(row.relation): row for row in self.rows}
+        current = []
+        for relation in project.relations:
+            row = previous.pop(id(relation), None)
+            if row is None:
+                row = RelationInlineControls(relation, self)
+            else:
+                row.sync()
+            current.append(row)
+        for row in previous.values():
+            self.rows_layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+        self.rows = current
+        for index, row in enumerate(self.rows):
+            self.rows_layout.insertWidget(index, row)
+        self.add_button.setEnabled(len(project.blocks) >= 2)
+        self.dialogue_button.setEnabled(len(project.blocks) >= 2)
+        self.add_button.setToolTip("Add a relation" if len(project.blocks) >= 2 else "Add at least two blocks first")
+        self._apply_filter(self.filter_edit.text())
+        self._refresh_builtin_status()
+
+    def update_runtime(self):
+        if self.isVisible():
+            for row in self.rows:
+                if row.isVisible() and row.relation.algorithm == 'Dialogue':
+                    row.dialogue.update_runtime()
 
     def _refresh_builtin_status(self):
         """Show the otherwise implicit role routes in the Relations tab."""
@@ -2890,8 +3497,12 @@ class RelationGraphEditor(QWidget):
             if not sources or not destinations:
                 continue
             for destination in destinations:
+                if destination_type == 'MELODY' and self.host.engine.harmonic_runtime.follows(destination):
+                    lines.append(f"Harmonic Plan → {destination.name}: chord anchors active")
+                    continue
                 explicit = [r for r in self.project.relations
                             if getattr(r, "enabled", True)
+                            and r.algorithm != 'Dialogue'
                             and int(getattr(r, "destination_block", -1)) == int(destination.id)
                             and str(getattr(r, "destination_part", "")) == destination_part
                             and str(getattr(r, "source_part", "")) == source_part
@@ -2904,216 +3515,6 @@ class RelationGraphEditor(QWidget):
                     lines.append(f"{source_type} [{source_names}] → {destination.name}: {label} active")
         self.builtin_status.setText("Built-in status: " + "   ·   ".join(lines) if lines else "Built-in status: no role pairs in this project")
 
-    def _block_name(self, block_id):
-        block = next((b for b in self.project.blocks if b.id == block_id), None)
-        return block.name if block else f"BLOCK {block_id}"
-
-    def _inspector_changed(self, _value=None):
-        if self._updating:
-            return
-        index = self._selected_index
-        if index < 0 or index >= len(self.project.relations):
-            return
-        if self.source.currentData() is None or self.dest.currentData() is None:
-            return
-        relation = self.project.relations[index]
-        relation.source_block = int(self.source.currentData())
-        relation.source_part = self.source_part.currentText()
-        relation.algorithm = self.algorithm.currentText()
-        relation.destination_block = int(self.dest.currentData())
-        relation.destination_part = self.dest_part.currentText()
-        relation.amount = float(self.amount.value())
-        relation.curve = self.curve.currentText()
-        relation.delay = int(self.delay.currentData() or 0)
-        relation.probability = float(self.probability.value())
-        relation.enabled = bool(self.enabled.isChecked())
-        if hasattr(self.host, "_mark_dirty"):
-            self.host._mark_dirty()
-        # Only the relation layer changed: re-apply relations instead of
-        # regenerating (and reshuffling) every SEQ block on each knob move.
-        self.host.engine.apply_relations()
-        self._update_summary(relation)
-        self._refresh_row(index)
-        self._refresh_builtin_status()
-
-    def _refresh_row(self, index):
-        if index < 0 or index >= len(self.project.relations):
-            return
-        relation = self.project.relations[index]
-        values = self._row_values(relation)
-        self._updating = True
-        try:
-            for col, value in enumerate(values):
-                item = self.table.item(index, col)
-                if item is None:
-                    item = QTableWidgetItem()
-                    self.table.setItem(index, col, item)
-                item.setText(value)
-        finally:
-            self._updating = False
-
-    def _row_values(self, relation):
-        return (
-            "ON" if getattr(relation, "enabled", True) else "OFF",
-            self._block_name(relation.source_block),
-            parameter_label(relation.source_part),
-            relation.algorithm,
-            self._block_name(relation.destination_block),
-            parameter_label(relation.destination_part),
-            f"{float(relation.amount):.2f}",
-            "ACTIVE" if getattr(relation, "enabled", True) else "DISABLED",
-        )
-
-    def add_relation(self, relation):
-        if not getattr(relation, "id", 0):
-            relation.id = next_relation_id(self.project)
-        self.project.relations.append(relation)
-        if hasattr(self.host, "_mark_dirty"):
-            self.host._mark_dirty()
-        self.host.engine.generate()
-        self.rebuild(self.project, select_index=len(self.project.relations) - 1)
-
-    def delete_selected_relation(self):
-        index = self._selected_index
-        if index < 0 or index >= len(self.project.relations):
-            return
-        # Mutate the model first.  The table is then rebuilt on the next event
-        # loop turn; no child widget is destroyed from its own signal handler.
-        remove_relation(self.project, index)
-        if hasattr(self.host, "_mark_dirty"):
-            self.host._mark_dirty()
-        self._selected_index = -1
-        self.host.engine.generate()
-        QTimer.singleShot(0, lambda: self.rebuild(self.project, select_index=min(index, len(self.project.relations) - 1)))
-
-    def duplicate_selected_relation(self):
-        index = self._selected_index
-        if index < 0 or index >= len(self.project.relations):
-            return
-        duplicate = duplicate_relation(self.project, index)
-        if duplicate is None:
-            return
-        if hasattr(self.host, "_mark_dirty"):
-            self.host._mark_dirty()
-        self.host.engine.generate()
-        QTimer.singleShot(0, lambda: self.rebuild(self.project, select_index=index + 1))
-
-    def delete_relation(self, index):
-        """Compatibility entry point for older callers/tests."""
-        if 0 <= index < len(self.project.relations):
-            self._selected_index = index
-            self.delete_selected_relation()
-
-    def edit_relation(self, index):
-        if 0 <= index < len(self.project.relations):
-            self.table.selectRow(index)
-            self.select_relation(index)
-
-    def refresh_runtime(self):
-        # Runtime refresh does not rebuild widgets; the relation table is pure
-        # presentation of stable model objects.
-        if 0 <= self._selected_index < len(self.project.relations):
-            self._update_summary(self.project.relations[self._selected_index])
-
-    def forget_block_position(self, block_id):
-        # Kept as a compatibility no-op for block deletion code from v73.
-        return None
-
-    def _apply_filter(self, text):
-        query = str(text or "").strip().lower()
-        for row in range(self.table.rowCount()):
-            hay = " ".join((self.table.item(row,col).text() if self.table.item(row,col) else "") for col in range(self.table.columnCount())).lower()
-            self.table.setRowHidden(row, bool(query and query not in hay))
-
-    def validate_relations(self):
-        return validate_relations(self.project)
-
-    def rebuild(self, project, select_index=-1):
-        self.project = project
-        self._populate_blocks()
-        self._updating = True
-        try:
-            self.table.clearContents()
-            self.table.setRowCount(len(project.relations))
-            for row, relation in enumerate(project.relations):
-                for col, value in enumerate(self._row_values(relation)):
-                    item = QTableWidgetItem(value)
-                    item.setData(Qt.UserRole, getattr(relation, "id", 0))
-                    self.table.setItem(row, col, item)
-        finally:
-            self._updating = False
-        if 0 <= select_index < len(project.relations):
-            self.table.selectRow(select_index)
-            self.select_relation(select_index)
-        else:
-            self.table.clearSelection()
-            self.select_relation(-1)
-        self._apply_filter(self.filter_edit.text())
-        self._refresh_builtin_status()
-
-
-class RelationEditor(QDialog):
-    def __init__(self, project: Project, relation: Relation | None = None, parent=None):
-        super().__init__(parent)
-        self.project = project
-        self.relation = relation
-        self.setWindowTitle("Edit relation" if relation else "Add relation")
-        self.setMinimumWidth(520)
-        form = QFormLayout(self)
-        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        self.source = QComboBox(); self.dest = QComboBox()
-        for b in project.blocks:
-            self.source.addItem(b.name, b.id)
-            self.dest.addItem(b.name, b.id)
-        self.source_part = QComboBox(); self.source_part.addItems(PARTS)
-        self.dest_part = QComboBox(); self.dest_part.addItems(PARTS)
-        self.algorithm = QComboBox(); self.algorithm.addItems(RELATIONS)
-        self.amount = ParamSlider(0.5)
-        self.help_label = QLabel()
-        self.help_label.setObjectName("muted")
-        self.help_label.setWordWrap(True)
-
-        form.addRow("Source block", self.source)
-        form.addRow("Source output", self.source_part)
-        form.addRow("Relation", self.algorithm)
-        form.addRow("Destination block", self.dest)
-        form.addRow("Destination input", self.dest_part)
-        form.addRow("Amount / depth", self.amount)
-        form.addRow("", self.help_label)
-
-        self.algorithm.currentTextChanged.connect(self._update_help)
-        self._update_help(self.algorithm.currentText())
-
-        if relation is not None:
-            self.source.setCurrentIndex(max(0, self.source.findData(relation.source_block)))
-            self.dest.setCurrentIndex(max(0, self.dest.findData(relation.destination_block)))
-            self.source_part.setCurrentText(relation.source_part)
-            self.dest_part.setCurrentText(relation.destination_part)
-            self.algorithm.setCurrentText(relation.algorithm)
-            self.amount.setValue(relation.amount)
-
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-
-    def _update_help(self, name):
-        help_text = {
-            "Copy": "Blend the source signal into the destination. 0 = unchanged, 1 = source.",
-            "Mix": "Crossfade source and destination using the amount.",
-            "Quantize To": "Move destination values toward source-derived integer values.",
-            "Modulate": "Add source × amount to the destination.",
-            "Follow": "Crossfade toward the source (currently identical to Mix).",
-            "Trigger": "Convert source activity into a trigger signal; amount controls sensitivity.",
-        }
-        self.help_label.setText(help_text.get(name, ""))
-
-    def value(self):
-        return Relation(
-            int(self.source.currentData()), self.source_part.currentText(),
-            int(self.dest.currentData()), self.dest_part.currentText(),
-            self.algorithm.currentText(), self.amount.value()
-        )
 
 
 # Process parameter UI: (key, minimum, maximum, decimals, integer, default).
@@ -3615,6 +4016,8 @@ class MainWindow(QMainWindow):
         self._block_type_change_pending: dict[int, int] = {}
         self._inspector_generation = 0
         self._refresh_all()
+        self.performance.phrase_panel._save_settings()
+        self.history_controller = HistoryController(self)
 
         # MIDI transport clock.  v6 accidentally lost the Qt timer that
         # drives Transport.tick(), so PLAY opened MIDI ports but never
@@ -3630,7 +4033,11 @@ class MainWindow(QMainWindow):
         self.performance_timer.timeout.connect(self._update_piano_roll)
         # UI-only refreshes live on the 80 ms heartbeat, not on the 5 ms MIDI clock.
         self.performance_timer.timeout.connect(self._sync_transport_buttons)
+        self.performance_timer.timeout.connect(self._update_motif_status)
+        self.performance_timer.timeout.connect(self._update_kit_status)
         self.performance_timer.timeout.connect(self._flush_monitor)
+        self.performance_timer.timeout.connect(self.performance.harmonic_panel.update_runtime)
+        self.performance_timer.timeout.connect(self.relation_graph.update_runtime)
         self.performance_timer.start()
         self._sync_transport_buttons()
 
@@ -3645,8 +4052,8 @@ class MainWindow(QMainWindow):
             apply_role_defaults(b)
         ensure_drum_voices(self.project.blocks[0])
         self.project.relations = [
-            Relation(1, "rhythm", 2, "rhythm", "Modulate", .35),
-            Relation(2, "pitch", 3, "pitch", "Follow", .30),
+            Relation(1, "rhythm", 2, "rhythm", "Modulate", .35, id=1),
+            Relation(2, "pitch", 3, "pitch", "Follow", .30, id=2),
         ]
 
     def _harmony_changed(self, *_):
@@ -3680,6 +4087,8 @@ class MainWindow(QMainWindow):
             return
         self._dirty = True
         self._update_title()
+        if hasattr(self, "history_controller"):
+            self.history_controller.changed()
 
     def _set_global_macro(self, index, value, source=None):
         """Update the shared header/Perform macro and its Director target."""
@@ -3710,6 +4119,31 @@ class MainWindow(QMainWindow):
         # this from every QSlider.valueChanged event made the UI regenerate
         # and rebuild relation outputs dozens of times per pixel.
         self.engine.generate()
+
+    def _set_drum_kit_parameter(self, drum, key, value):
+        # Kit edits share the transport lock, keep the pinned editor alive,
+        # and coalesce expensive SEQ regeneration while dragging a knob.
+        with self.transport._state_lock:
+            self.engine.parameter_influence.manual(drum, key, max(0.0, min(1.0, float(value))))
+        self._mark_dirty()
+        if key == "kit_swing":
+            return  # Read directly by the next timing calculation.
+        pending = getattr(self, "_kit_regen_pending", None)
+        if pending is None:
+            self._kit_regen_pending = pending = set()
+        if id(drum) not in pending:
+            pending.add(id(drum))
+            QTimer.singleShot(35, lambda d=drum: self._flush_drum_kit(d))
+
+    def _flush_drum_kit(self, drum):
+        self._kit_regen_pending.discard(id(drum))
+        if not any(block is drum for block in self.project.blocks):
+            return  # A different project may have been opened meanwhile.
+        with self.transport._state_lock:
+            self.engine.regenerate(drum)
+        selected = self._selected_inspector_entity()
+        if selected is not None and (selected is drum or getattr(selected, "parent_id", None) == drum.id):
+            self._update_algorithm_preview(selected)
 
     def _confirm_discard_changes(self):
         """Return whether a destructive navigation may replace this project."""
@@ -3781,7 +4215,8 @@ class MainWindow(QMainWindow):
         self.scale.currentTextChanged.connect(self._harmony_changed); top.addWidget(self.scale)
         self.scale.setAccessibleName("Scale")
         top.addStretch()
-        top.addWidget(QLabel("THEME"))
+        self.theme_label = QLabel("THEME")
+        top.addWidget(self.theme_label)
         self.theme_combo = QComboBox()
         self.theme_combo.addItems(theme_names())
         self.theme_combo.setFixedWidth(105)
@@ -3988,9 +4423,13 @@ class MainWindow(QMainWindow):
         css = theme_stylesheet(theme)
         app = QApplication.instance()
         if app is not None:
-            app.setPalette(build_qpalette(palette))
-            app.setStyleSheet(css)
-            self.setStyleSheet("")
+            qpalette = build_qpalette(palette)
+            if app.palette() != qpalette:
+                app.setPalette(qpalette)
+            if app.styleSheet() != css:
+                app.setStyleSheet(css)
+            if self.styleSheet():
+                self.setStyleSheet("")
         else:
             self.setStyleSheet(css)
         self._refresh_theme_assets()
@@ -4001,7 +4440,9 @@ class MainWindow(QMainWindow):
         if path.exists():
             for label, size in ((getattr(self, "brand_logo", None), (56, 53)), (getattr(self, "help_logo", None), (74, 60))):
                 if label is not None:
-                    label.setPixmap(tinted_pixmap(path, theme.text, *size))
+                    # Preserve the current artwork's own background and colours.
+                    label.setPixmap(QPixmap(str(path)).scaled(
+                        *size, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         if hasattr(self, "tabs"):
             for i, symbol in enumerate(("▦", "▶", "↔", "≋", "?")):
                 if i < self.tabs.count():
@@ -4267,6 +4708,256 @@ class MainWindow(QMainWindow):
         host.adjustSize()
         host.updateGeometry()
 
+    def _motif_controls(self, block):
+        motif = self.engine.active_motif(block)
+        group = InspectorGroup("MOTIF", expanded=self._inspector_state.get((block.id, "MOTIF"), motif is not None))
+        group.setObjectName("inspectorGroup_MOTIF")
+        group.set_summary(motif.name if motif is not None else "none")
+        group.accordion_toggled.connect(lambda checked, bid=block.id: self._remember_group(bid, "MOTIF", checked))
+        form = QVBoxLayout(group)
+        form.setContentsMargins(7, 6, 7, 6)
+        form.setSpacing(4)
+        def row(label):
+            box = QHBoxLayout()
+            caption = QLabel(label)
+            caption.setFixedWidth(76)
+            box.addWidget(caption)
+            box.setSpacing(6)
+            form.addLayout(box)
+            return box
+        source_row = row("Source")
+        choice = QComboBox()
+        choice.setObjectName("motifChoice")
+        choice.setMinimumWidth(180)
+        choice.setMaximumWidth(230)
+        choice.setAccessibleName("Motif source")
+        choice.addItem("Phrase auto", None)
+        choice.addItem("Off — generator", "")
+        for item in self.engine.director.motifs.motifs.values():
+            if str(item.role).upper() == str(block.block_type).upper():
+                choice.addItem(item.name or item.id, item.id)
+        binding = block.parameters.get("motif_id")
+        index = choice.findData(binding)
+        if index < 0:
+            choice.addItem(f"Unavailable: {binding}", binding)
+            index = choice.count() - 1
+        choice.setCurrentIndex(index)
+        choice.setToolTip("Choose a saved motif for this block/voice. Phrase auto uses the active phrase's role motif; Off uses the generator.")
+        choice.currentIndexChanged.connect(lambda _index, b=block, w=choice: self._set_motif_binding(b, w.currentData()))
+        source_row.addWidget(choice)
+        capture = QPushButton("Capture")
+        capture.setObjectName("motifCapture")
+        capture.setToolTip("Create and select a new theme from this generator's preview, before mutations, relations and macros. LIVE captures a preview, not MIDI history.")
+        capture.clicked.connect(lambda _checked=False, b=block: self._capture_motif(b))
+        source_row.addWidget(capture)
+        save = QPushButton("Save variant")
+        save.setObjectName("motifSaveVariant")
+        save.setToolTip("Save the current source variant as a new reusable theme and select it.")
+        save.setEnabled(motif is not None)
+        save.clicked.connect(lambda _checked=False, b=block: self._capture_motif(b, True))
+        source_row.addWidget(save)
+        source_row.addStretch(1)
+        timing_row = row("Step · beats")
+        step = ValueStepper()
+        step.setObjectName("motifStepBeats")
+        step.setAccessibleName("Motif step in quarter-note beats")
+        step.setDecimals(4)
+        step.setRange(.0625, 16.0)
+        step.setSingleStep(.125)
+        step.setValue(self.engine.motif_step_beats(block, motif) if motif is not None else block.parameters.get("motif_step_beats", .25))
+        step.setEnabled(motif is not None and self.engine.coordinated_drum(block) is None)
+        step.setToolTip("Musical duration of one motif slot, including rests. 1 = quarter note. Independent of generator timing rate and random LIVE intervals.")
+        step.valueChanged.connect(lambda value, b=block: self._set_motif_step(b, float(value)))
+        timing_row.addWidget(step)
+        timing_row.addWidget(QLabel("Develop"))
+        development = QComboBox()
+        development.setObjectName("motifDevelopment")
+        for title, key in MOTIF_MODES:
+            development.addItem(title, key)
+        config = motif_settings(block.parameters)
+        development.setCurrentIndex(development.findData(config["mode"]))
+        development.setEnabled(motif is not None)
+        development.setToolTip("Develop the original theme at cycle boundaries. Melodic changes scale neighbours; for drums it changes weak accents. Rhythmic changes weak hits/rests.")
+        development.currentIndexChanged.connect(lambda _index, b=block, w=development: self._set_motif_development(b, "motif_development", w.currentData()))
+        timing_row.addWidget(development)
+        timing_row.addStretch(1)
+        settings_row = row("Amount")
+        for index, (key, name, value, lo, hi, decimals, increment) in enumerate((
+                ("motif_amount", "motifAmount", config["amount"], 0, 1, 2, .05),
+                ("motif_every", "motifEvery", config["every"], 1, 16, 0, 1),
+                ("motif_return", "motifReturn", config["return"], 2, 16, 0, 1))):
+            if index:
+                settings_row.addWidget(QLabel("Every · cycles" if index == 1 else "Return · variants"))
+            control = ValueStepper()
+            control.setObjectName(name)
+            control.setDecimals(decimals)
+            control.setRange(lo, hi)
+            control.setSingleStep(increment)
+            control.setValue(value)
+            control.setEnabled(motif is not None)
+            control.setToolTip({"motif_amount": "Fraction of weak positions eligible for bounded development. Zero keeps the theme.",
+                                "motif_every": "Keep each variant for this many complete motif cycles.",
+                                "motif_return": "Return to the original theme after this many variant periods (including the theme)."}[key] + " Changes during PLAY take effect at the next cycle.")
+            control.valueChanged.connect(lambda value, b=block, k=key: self._set_motif_development(b, k, value))
+            settings_row.addWidget(control)
+        settings_row.addStretch(1)
+        memory_row = row("History")
+        history = QComboBox()
+        history.setObjectName("motifHistory")
+        history.setMinimumWidth(180)
+        history.setMaximumWidth(230)
+        history.setToolTip("Last eight distinct source variants in this session. Recall holds the selected variant; Save variant makes it a reusable theme.")
+        memory_row.addWidget(history)
+        recall = QPushButton("Recall")
+        recall.setObjectName("motifRecall")
+        recall.clicked.connect(lambda _checked=False, b=block, w=history: self._recall_motif(b, w.currentData()))
+        memory_row.addWidget(recall)
+        hold = QCheckBox("Hold")
+        hold.setObjectName("motifHold")
+        hold.setChecked(bool(config["hold"]))
+        hold.setEnabled(motif is not None)
+        hold.setToolTip("Keep the current source variant across cycles and project saves. Changes take effect at the next cycle during PLAY.")
+        hold.toggled.connect(lambda checked, b=block: self._hold_motif(b, checked))
+        memory_row.addWidget(hold)
+        memory_row.addStretch(1)
+        status = QLabel()
+        status.setObjectName("motifPosition")
+        status.setProperty("block_id", block.id)
+        status.setWordWrap(True)
+        status.setText("No motifs in this project" if not self.engine.director.motifs.motifs else "Transport-synced motif playback")
+        form.addWidget(status)
+        return group
+
+    def _set_motif_binding(self, block, binding):
+        with self.transport._state_lock:
+            if binding is None:
+                block.parameters.pop("motif_id", None)
+            else:
+                block.parameters["motif_id"] = str(binding)
+            block.parameters.pop("motif_hold", None)
+            self.engine.motif_development.forget(block.id)
+            self.engine.regenerate(block)
+        self._mark_dirty()
+        self._queue_inspector_refresh("SOURCE")
+
+    def _set_motif_step(self, block, value):
+        with self.transport._state_lock:
+            block.parameters["motif_step_beats"] = max(.0625, min(16.0, value))
+        self._mark_dirty()
+        self._update_motif_status()
+
+    def _set_motif_development(self, block, key, value):
+        with self.transport._state_lock:
+            block.parameters[key] = value
+            if not self.transport.running:
+                self.engine.regenerate(block)
+                self.engine.motif_variant(block)
+        self._mark_dirty()
+        self._update_motif_status()
+
+    def _hold_motif(self, block, checked):
+        with self.transport._state_lock:
+            changed = self.engine.hold_motif(block, checked)
+            if changed and not self.transport.running:
+                self.engine.regenerate(block)
+                self.engine.motif_variant(block)
+        if changed:
+            self._mark_dirty()
+        self._update_motif_status()
+
+    def _recall_motif(self, block, token):
+        if not token:
+            return
+        with self.transport._state_lock:
+            changed = self.engine.hold_motif(block, token=token)
+            if changed and not self.transport.running:
+                self.engine.regenerate(block)
+                self.engine.motif_variant(block)
+        if changed:
+            self._mark_dirty()
+        self._update_motif_status()
+
+    def _capture_motif(self, block, current_variant=False):
+        with self.transport._state_lock:
+            motif = self.engine.capture_motif(block, current_variant)
+        if motif is not None:
+            self._mark_dirty()
+            self.set_message(f"Saved motif: {motif.name}")
+            self._queue_inspector_refresh("SOURCE")
+
+    def _update_kit_status(self):
+        layout = getattr(self, "drum_kit_layout", None)
+        if layout is not None and layout.count():
+            panel = layout.itemAt(0).widget()
+            if panel is not None and isValid(panel) and panel.isVisible():
+                panel.update_position()
+
+    def _update_motif_status(self):
+        scroll = getattr(self, "inspector_scroll", None)
+        if scroll is None or not isValid(scroll) or scroll.widget() is None:
+            return
+        label = scroll.widget().findChild(QLabel, "motifPosition")
+        block = self._selected_inspector_entity()
+        if label is None or block is None or label.property("block_id") != block.id:
+            return
+        motif = self.engine.active_motif(block)
+        editor = scroll.widget().findChild(ValueStepper, "motifStepBeats")
+        group = scroll.widget().findChild(InspectorGroup, "inspectorGroup_MOTIF")
+        if editor is not None:
+            editor.setEnabled(motif is not None and self.engine.coordinated_drum(block) is None)
+            if self.engine.coordinated_drum(block) is not None:
+                editor.setToolTip("Coordinated Kit uses a shared 1/16 step (0.25 beats). Choose Role = Free for independent motif timing.")
+            if motif is not None and not editor.editor.hasFocus():
+                effective_step = self.engine.motif_step_beats(block, motif)
+                if editor.value() != effective_step:
+                    editor.blockSignals(True)
+                    editor.setValue(effective_step)
+                    editor.blockSignals(False)
+        if group is not None:
+            group.set_summary(motif.name if motif is not None else "none")
+        page = scroll.widget()
+        for name in ("motifDevelopment", "motifAmount", "motifEvery", "motifReturn", "motifSaveVariant", "motifHold"):
+            control = page.findChild(QWidget, name)
+            if control is not None:
+                control.setEnabled(motif is not None)
+        with self.transport._state_lock:
+            variant = self.engine.motif_development.current(block.id)
+            if motif is not None and (variant is None or variant.motif.id != motif.id):
+                variant = self.engine.motif_variant(block)
+            history_items = list(self.engine.motif_development.history.get(block.id, [])) if motif is not None else []
+            config = motif_settings(block.parameters)
+        history = page.findChild(QComboBox, "motifHistory")
+        if history is not None and not history.view().isVisible():
+            items = [(f"Cycle {v.cycle + 1} · {v.label}", v.token) for v in reversed(history_items)]
+            existing = [(history.itemText(i), history.itemData(i)) for i in range(history.count())]
+            if existing != items:
+                selection = history.currentData()
+                history.blockSignals(True)
+                history.clear()
+                for title, token in items:
+                    history.addItem(title, token)
+                index = history.findData(selection)
+                history.setCurrentIndex(index if index >= 0 else 0)
+                history.blockSignals(False)
+            history.setEnabled(bool(items))
+        recall = page.findChild(QPushButton, "motifRecall")
+        if recall is not None:
+            recall.setEnabled(bool(history_items))
+        hold = page.findChild(QCheckBox, "motifHold")
+        if hold is not None:
+            hold.blockSignals(True)
+            hold.setChecked(bool(config["hold"]))
+            hold.blockSignals(False)
+        if motif is None:
+            label.setText("No active motif" if self.engine.director.motifs.motifs else "No motifs in this project")
+            return
+        step = self.engine.motif_step_beats(block, motif)
+        beat = self.engine.clock.position_beats
+        suffix = f" · {variant.label}" if variant is not None else ""
+        if variant is not None and variant.settings_key != motif_digest(config):
+            suffix += " · changes next cycle"
+        label.setText(f"Step {motif.index_at(beat, step) + 1}/{motif.steps} · Cycle {motif.steps * step:g} beats · Beat {beat:.2f}{suffix}")
+
     def _refresh_inspector(self, restore_anchor=None):
         # Every rebuild replaces the QScrollArea page.  Previously deferred
         # scroll callbacks captured the old page, which may already have been
@@ -4422,11 +5113,11 @@ class MainWindow(QMainWindow):
                 self.full_width.append(widget); self.reflow(force=True)
         gform=_CompactGeneratorForm(generator,self)
         def add_int(label,key,lo,hi,default):
-            w=RangeKnob(lo,hi,int(b.parameters.get(key,default)),True,default=default); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,int(x))); w._auricle_randomize_key=key; gform.addRow(parameter_label(key,label),w); return w
+            w=RangeKnob(lo,hi,int(b.parameters.get(key,default)),True,default=default); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,int(x))); w._auricle_randomize_key=key; w.bind_parameter(b.id, key); gform.addRow(parameter_label(key,label),w); return w
         def add_float(label,key,lo,hi,default,step=.05):
-            w=RangeKnob(lo,hi,float(b.parameters.get(key,default)),False,default=default); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,float(x))); w._auricle_randomize_key=key; gform.addRow(parameter_label(key,label),w); return w
+            w=RangeKnob(lo,hi,float(b.parameters.get(key,default)),False,default=default); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,float(x))); w._auricle_randomize_key=key; w.bind_parameter(b.id, key); gform.addRow(parameter_label(key,label),w); return w
         def add_slider(label,key,default):
-            w=ParamKnob(float(b.parameters.get(key,default)),default=float(default)); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,x)); w._auricle_randomize_key=key; gform.addRow(parameter_label(key,label),w); return w
+            w=ParamKnob(float(b.parameters.get(key,default)),default=float(default)); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,x)); w._auricle_randomize_key=key; w.bind_parameter(b.id, key); gform.addRow(parameter_label(key,label),w); return w
         def add_bool(label,key,default=False):
             w=QCheckBox(); w.setChecked(bool(b.parameters.get(key,default))); w.toggled.connect(lambda x,b=b,k=key:self._set_param(b,k,x)); gform.addRow(label,w); return w
         def add_seed(): add_int("Seed","variation_seed",-9999,9999,0)
@@ -4501,12 +5192,23 @@ class MainWindow(QMainWindow):
             add_int("Rotation", "pattern_rotation", 0, max(0, self.project.length - 1), 0)
             add_float("Scale", "pattern_scale", 0.0, 4.0, 1.0, .05)
             add_slider("Probability", "pattern_probability", 1.0); add_bool("Reverse", "pattern_reverse", False)
+            chance_editor = PatternChanceEditor(self, b)
+            gform.addRow("Step chance", chance_editor)
+            pattern.editingFinished.connect(chance_editor.refresh)
 
-        self.algorithm_preview=AlgorithmPreviewWidget(); self.algorithm_preview.set_block(b,self.project); gform.addWidget(self.algorithm_preview)
         source_layout.addWidget(generator)
         if not (parent_block is not None and parent_block.block_type == "DRUM" and not getattr(b, "is_drum_voice", False)):
+            source_layout.insertWidget(0, self._motif_controls(b))
+            preview = AlgorithmPreviewWidget(generator)
+            preview.set_block(b, self.project)
+            gform.addWidget(preview)
             layout.addWidget(source,1,0,1,2)
         else:
+            # The kit container has no generator preview. Keep the unused
+            # SOURCE subtree owned by the page until the page is replaced.
+            # An unowned hidden SOURCE used to be garbage-collected while
+            # self.algorithm_preview still pointed to its deleted Qt child.
+            source.setParent(page)
             source.hide()
 
         # STRUCTURE — shape and timing of the generated material.
@@ -4533,7 +5235,11 @@ class MainWindow(QMainWindow):
         def add_grid_knob(grid, label, key, lo, hi, default, integer=False, col=0, row=0):
             value = b.parameters.get(key, default)
             w = RangeKnob(lo, hi, int(value) if integer else float(value), integer, default=knob_resets.get(key, default))
+            w.bind_parameter(b.id, key)
             w.setAccessibleName(parameter_label(key, label))
+            if key in ("timing_rate", "live_min_beats", "live_max_beats") and self.engine.coordinated_drum(b) is not None:
+                w.setEnabled(False)
+                w.setToolTip("Coordinated Kit uses the shared 1/16 grid. Choose Role = Free for independent timing.")
             w.changed.connect(lambda x, b=b, k=key, integer=integer: self._set_param(b, k, int(x) if integer else float(x)))
             cell = QWidget(); cell.setFixedWidth(74)
             cv = QVBoxLayout(cell); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0)
@@ -4577,6 +5283,8 @@ class MainWindow(QMainWindow):
 
         timing = InspectorGroup("TIMING", expanded=self._inspector_state.get((b.id,"TIMING"),True))
         timing.setObjectName("inspectorGroup_TIMING"); timing.set_summary("rate · swing · gate · humanize · offset")
+        if self.engine.coordinated_drum(b) is not None:
+            timing.set_summary("Kit grid · 1/16 · swing · gate · humanize · offset")
         timing.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"TIMING",checked))
         tf = QGridLayout(timing); tf.setContentsMargins(7,5,7,5); tf.setHorizontalSpacing(4); tf.setVerticalSpacing(3); tf.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         add_grid_knob(tf,"Rate","timing_rate",0.25,4.0,float(b.parameters.get("timing_rate",1.0)),False,0)
@@ -4601,10 +5309,14 @@ class MainWindow(QMainWindow):
         scale_group.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"SCALE & PITCH",checked))
         sf = QGridLayout(scale_group); sf.setContentsMargins(7,6,7,6); sf.setHorizontalSpacing(4); sf.setVerticalSpacing(3); sf.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         root=RangeKnob(0,127,int(b.parameters.get("scale_root",self.project.root_note)),True,default=self.project.root_note); root.changed.connect(lambda x,b=b:self._set_param(b,"scale_root",int(x)))
+        root.bind_parameter(b.id, "scale_root")
         sc=QComboBox(); sc.addItems(SCALES); sc.setCurrentText(str(b.parameters.get("scale_name",self.project.scale))); sc.currentTextChanged.connect(lambda x,b=b:self._set_param(b,"scale_name",x))
         trans=RangeKnob(-48,48,float(b.parameters.get("transpose",0)),True,default=0); trans.changed.connect(lambda x,b=b:self._set_param(b,"transpose",float(x)))
+        trans.bind_parameter(b.id, "transpose")
         octv=RangeKnob(-4,4,float(b.parameters.get("octave",0)),True,default=0); octv.changed.connect(lambda x,b=b:self._set_param(b,"octave",float(x)))
+        octv.bind_parameter(b.id, "octave")
         prange=RangeKnob(1,48,int(b.parameters.get("pitch_range",24)),True,default=24); prange.changed.connect(lambda x,b=b:self._set_param(b,"pitch_range",int(x)))
+        prange.bind_parameter(b.id, "pitch_range")
         for i,(label,w) in enumerate([("Root",root),("Scale",sc),("Transpose",trans),("Octave",octv),("Range",prange)]):
             cell=QWidget(); cell.setFixedWidth(74); cv=QVBoxLayout(cell); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0); lab=QLabel(label); lab.setAlignment(Qt.AlignCenter); lab.setObjectName("knobLabel"); cv.addWidget(lab); cv.addWidget(w,0,Qt.AlignCenter); sf.addWidget(cell,0,i,Qt.AlignLeft | Qt.AlignTop)
         musical_layout.addWidget(scale_group)
@@ -4647,6 +5359,14 @@ class MainWindow(QMainWindow):
         if b.block_type in ROLE_PROFILES:  # DRUM has its own nested voice editor
             musical_layout.addWidget(role)
 
+        if b.block_type in ("CHORD", "PAD", "BASS", "MELODY"):
+            follow_plan = QCheckBox("Follow harmonic plan (Perform)")
+            follow_plan.setChecked(bool(b.parameters.get("harmonic_follow", True)))
+            follow_plan.toggled.connect(lambda value, b=b: self._set_param(b, "harmonic_follow", value))
+            rof.addWidget(follow_plan, 2, 0, 1, 4)
+            if b.block_type in ("BASS", "MELODY"):
+                add_grid_knob(rof, "Plan anchor", "harmonic_strength", 0, 1, .75, False, 4, 2)
+
         harmony = InspectorGroup("HARMONY", expanded=self._inspector_state.get((b.id,"HARMONY"),False))
         harmony.setObjectName("inspectorGroup_HARMONY"); harmony.set_summary("voicing · spread · inversion · role")
         harmony.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"HARMONY",checked))
@@ -4660,11 +5380,15 @@ class MainWindow(QMainWindow):
         representation=InspectorGroup("REPRESENTATION",expanded=self._inspector_state.get((b.id,"MUSICAL REPRESENTATION"),True)); representation.setObjectName("inspectorGroup_REPRESENTATION"); representation.set_summary(f"Vel {float(b.parameters.get('velocity_base',.72)):.2f} · Accent {float(b.parameters.get('velocity_accent',.18)):.2f}"); representation.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"MUSICAL REPRESENTATION",checked))
         rf=QGridLayout(representation); rf.setContentsMargins(7,6,7,6); rf.setHorizontalSpacing(4); rf.setVerticalSpacing(3); rf.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         for col,(label,key,default) in enumerate([("Velocity base","velocity_base",.72),("Velocity range","velocity_range",.25),("Velocity random","velocity_random",0.0),("Accent","velocity_accent",.18)]):
-            w=ParamKnob(float(b.parameters.get(key,default)),default=default); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,x)); cell=QWidget(); cell.setFixedWidth(74); cv=QVBoxLayout(cell); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0); lab=QLabel(parameter_label(key,label)); lab.setAlignment(Qt.AlignCenter); lab.setObjectName("knobLabel"); cv.addWidget(lab); cv.addWidget(w,0,Qt.AlignCenter); rf.addWidget(cell,0,col,Qt.AlignLeft | Qt.AlignTop)
+            w=ParamKnob(float(b.parameters.get(key,default)),default=default); w.bind_parameter(b.id, key); w.changed.connect(lambda x,b=b,k=key:self._set_param(b,k,x)); cell=QWidget(); cell.setFixedWidth(74); cv=QVBoxLayout(cell); cv.setContentsMargins(0,0,0,0); cv.setSpacing(0); lab=QLabel(parameter_label(key,label)); lab.setAlignment(Qt.AlignCenter); lab.setObjectName("knobLabel"); cv.addWidget(lab); cv.addWidget(w,0,Qt.AlignCenter); rf.addWidget(cell,0,col,Qt.AlignLeft | Qt.AlignTop)
         musical_layout.addWidget(representation); layout.addWidget(musical,3,0,1,2)
 
         # MOTION — only Mutation and Process for now.
         motion, motion_content, motion_layout = make_layer("MOTION","MOTION",f"{len(b.mutators)} mutations · {len(b.processes)} processes",False)
+        if b.block_type == "DRUM":
+            hint = QLabel("Voice chain → Kit chain. Pitch keeps the voice's fixed MIDI note. Disable Keep beat to allow rhythm shifts outside the role pattern.")
+            hint.setWordWrap(True); hint.setObjectName("drumProcessingHint")
+            motion_layout.addWidget(hint)
         mutation_amounts=InspectorGroup("MUTATION AMOUNT",expanded=self._inspector_state.get((b.id,"MUTATION AMOUNT"),True)); mutation_amounts.setObjectName("inspectorGroup_MUTATION_AMOUNT"); mutation_amounts.set_summary("pitch · rhythm · velocity · timing"); mutation_amounts.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"MUTATION AMOUNT",checked))
         maf=QGridLayout(mutation_amounts); maf.setContentsMargins(7,6,7,6); maf.setHorizontalSpacing(4); maf.setVerticalSpacing(3); maf.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         for col,(label,key) in enumerate([("Pitch","mutation_pitch"),("Rhythm","mutation_rhythm"),("Velocity","mutation_velocity"),("Timing","mutation_timing")]):
@@ -4672,18 +5396,13 @@ class MainWindow(QMainWindow):
         motion_layout.addWidget(mutation_amounts)
         mut=InspectorGroup("MUTATION",expanded=self._inspector_state.get((b.id,"MUTATORS"),True)); mut.setObjectName("inspectorGroup_MUTATION"); mut.set_summary(" · ".join(f"{m.name} {m.amount:.2f}" for m in b.mutators) or "none"); mut.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"MUTATORS",checked))
         ml=QVBoxLayout(mut); ml.setContentsMargins(7,6,7,6); ml.setSpacing(3)
-        for idx,m in enumerate(b.mutators):
-            wrapper=QWidget(); wrapper.setMinimumHeight(78); wrapper.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            rowlay=QHBoxLayout(wrapper); rowlay.setContentsMargins(0,2,0,2); rowlay.setSpacing(6)
-            label=QLabel(parameter_label(m.name.lower(),m.name)); label.setMinimumWidth(78); label.setMaximumWidth(110); rowlay.addWidget(label)
-            target=QComboBox(); target.addItems(["rhythm","pitch","velocity","timing"]); target.setCurrentText(getattr(m,"target","pitch")); target.setFixedWidth(76); target.currentTextChanged.connect(lambda x,i=idx,b=b:self._set_mutator_target(b,i,x)); rowlay.addWidget(target)
-            sl=ParamKnob(m.amount,default=.5); sl.setFixedWidth(54); sl.setSizePolicy(QSizePolicy.Fixed,QSizePolicy.Fixed); sl.changed.connect(lambda x,i=idx,b=b:self._set_mutator(b,i,x)); rowlay.addWidget(sl,0,Qt.AlignTop)
-            rem=QPushButton("×"); rem.setObjectName("cardDelete"); rem.setFixedSize(24,24); rem.clicked.connect(lambda _,i=idx,b=b:self.remove_mutator(b,i)); rowlay.addWidget(rem,0,Qt.AlignTop); rowlay.addStretch(1); ml.addWidget(wrapper)
-        add=QPushButton("+ Add mutator"); add.setObjectName("inspectorAddButton"); add.setFixedHeight(26); add.clicked.connect(self.add_mutator); ml.addWidget(add,0,Qt.AlignLeft); motion_layout.addWidget(mut)
+        for m in b.mutators:
+            ml.addWidget(MutatorInlineControls(m, b, self))
+        add=QPushButton("+ Add"); add.setObjectName("inspectorAddButton"); add.setAccessibleName("Add mutator"); add.setFixedHeight(26); add.clicked.connect(self.add_mutator); ml.addWidget(add,0,Qt.AlignLeft); motion_layout.addWidget(mut)
         proc_group=InspectorGroup("PROCESS",expanded=self._inspector_state.get((b.id,"PROCESS LAYER"),True)); proc_group.setObjectName("inspectorGroup_PROCESS"); proc_group.set_summary(f"{len(b.processes)} processes"); proc_group.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"PROCESS LAYER",checked)); proc_layout=QVBoxLayout(proc_group); proc_layout.setContentsMargins(6,6,6,6); proc_layout.setSpacing(3)
         for idx,proc in enumerate(b.processes):
             card=QWidget(); cv=QVBoxLayout(card); cv.setContentsMargins(0,0,0,0); cv.setSpacing(3); head=QHBoxLayout(); head.setSpacing(4); typ=QComboBox(); typ.addItems(PROCESS_TYPES); typ.setCurrentText(proc.type); typ.setFixedWidth(118); typ.currentTextChanged.connect(lambda x,b=b,i=idx:self._set_process_type(b,i,x)); head.addWidget(typ); tgt=QComboBox(); tgt.addItems(PROCESS_TARGETS); tgt.setCurrentText(proc.target); tgt.setFixedWidth(72); tgt.currentTextChanged.connect(lambda x,b=b,i=idx:self._set_process_target(b,i,x)); head.addWidget(tgt); head.addWidget(QLabel(f"Process {idx+1}"),1); rem=QPushButton("×"); rem.setObjectName("cardDelete"); rem.setFixedSize(22,22); rem.clicked.connect(lambda _,b=b,i=idx:self.remove_process(b,i)); head.addWidget(rem); cv.addLayout(head); cv.addWidget(ProcessInlineControls(proc,self.project,b,self)); proc_layout.addWidget(card)
-        addp=QPushButton("+ Add process"); addp.setObjectName("inspectorAddButton"); addp.setFixedHeight(26); addp.clicked.connect(self.add_process); proc_layout.addWidget(addp,0,Qt.AlignLeft); motion_layout.addWidget(proc_group); layout.addWidget(motion,4,0,1,2)
+        addp=QPushButton("+ Add"); addp.setObjectName("inspectorAddButton"); addp.setAccessibleName("Add process"); addp.setFixedHeight(26); addp.clicked.connect(self.add_process); proc_layout.addWidget(addp,0,Qt.AlignLeft); motion_layout.addWidget(proc_group); layout.addWidget(motion,4,0,1,2)
 
         # MONITOR / diagnostics
         monitor, monitor_content, monitor_layout = make_layer("MONITOR","MONITOR","piano roll",False)
@@ -4826,6 +5545,7 @@ class MainWindow(QMainWindow):
 
     def _block_colors_changed(self):
         self._refresh_blocks()
+        self._refresh_relations()
         if hasattr(self, "performance"): self.performance.refresh_blocks(self.project)
         if hasattr(self, "patch_overview"): self.patch_overview.rebuild(self.project)
         self._queue_inspector_refresh()
@@ -4972,7 +5692,9 @@ class MainWindow(QMainWindow):
     def _card_mute_changed(self, block_id, muted):
         # Rebuilding either card view destroys the emitting widget, so defer the
         # shared-state refresh until the current Qt click signal has unwound.
+        project = self.project
         def apply():
+            if self.project is not project: return
             b = self.get_block(block_id)
             if b is None:
                 return
@@ -4988,7 +5710,9 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, apply)
 
     def _card_mode_changed(self, block_id, mode):
+        project = self.project
         def apply():
+            if self.project is not project: return
             b = self.get_block(block_id)
             if b:
                 mode_value = "LIVE" if mode == "LIVE" else "SEQ"
@@ -5239,7 +5963,8 @@ class MainWindow(QMainWindow):
             if hasattr(self, "performance"): self.performance.refresh_blocks(self.project)
 
     def _set_param(self, b, key, value):
-        b.parameters[key] = value
+        with self.transport._state_lock:
+            self.engine.parameter_influence.manual(b, key, value)
         self._mark_dirty()
         pending = getattr(self, "_regen_pending", None)
         if pending is None:
@@ -5248,8 +5973,26 @@ class MainWindow(QMainWindow):
         if b.id not in pending:
             pending.add(b.id)
             QTimer.singleShot(0, lambda bid=b.id: self._flush_param_regen(bid))
-        if (getattr(self, "selected_block_id", None) == b.id or getattr(self, "selected_drum_voice_id", None) == b.id) and hasattr(self, "algorithm_preview"):
-            self.algorithm_preview.set_block(b, self.project)
+        self._update_algorithm_preview(b)
+
+    def _update_algorithm_preview(self, block):
+        """Resolve the preview from the current Qt-owned Inspector page.
+
+        A kit container or empty Inspector has no preview. A pending callback
+        may also outlive selection/page changes. Never retain a native widget
+        wrapper across rebuilds or update a preview for a different entity.
+        """
+        if block is None or self._selected_inspector_entity() is not block:
+            return
+        scroll = getattr(self, "inspector_scroll", None)
+        if scroll is None or not isValid(scroll):
+            return
+        page = scroll.widget()
+        if page is None:
+            return
+        preview = page.findChild(AlgorithmPreviewWidget)
+        if preview is not None and preview.block is block and preview.project is self.project:
+            preview.set_block(block, self.project)
 
     def _flush_param_regen(self, block_id):
         pending = getattr(self, "_regen_pending", set())
@@ -5259,33 +6002,22 @@ class MainWindow(QMainWindow):
             self.engine.regenerate(b)
             # The preview was updated before regeneration and showed the
             # previous pattern; refresh it with the regenerated material.
-            if (self.selected_block_id == block_id or self.selected_drum_voice_id == block_id) and hasattr(self, "algorithm_preview"):
-                try:
-                    self.algorithm_preview.set_block(b, self.project)
-                except RuntimeError:
-                    pass  # the Inspector page was rebuilt meanwhile
+            self._update_algorithm_preview(b)
 
-    def _set_mutator(self, b, index, value):
-        if index < len(b.mutators):
-            b.mutators[index].amount = value
-            self._mark_dirty()
-            self.engine.regenerate(b)
-            if getattr(self, "selected_block_id", None) == b.id and hasattr(self, "algorithm_preview"):
-                self.algorithm_preview.set_block(b, self.project)
-
-    def _set_mutator_target(self, b, index, target):
-        if index < len(b.mutators):
-            b.mutators[index].target = target
-            self._mark_dirty()
-            self.engine.regenerate(b)
-            if getattr(self, "selected_block_id", None) == b.id and hasattr(self, "algorithm_preview"):
-                self.algorithm_preview.set_block(b, self.project)
+    def _mutator_editor_changed(self, b):
+        self._mark_dirty()
+        self.engine.regenerate(b)
+        if self._selected_inspector_entity() is b:
+            self._update_algorithm_preview(b)
+            group = self.inspector_page.findChild(InspectorGroup, "inspectorGroup_MUTATION")
+            if group is not None:
+                group.set_summary(" · ".join(f"{m.name} {m.amount:.2f}" for m in b.mutators) or "none")
 
     def _process_editor_changed(self, process, block=None):
         # Process controls are live; avoid rebuilding the widget tree on every
         # drag. SEQ regenerates the owning block; LIVE uses the new process
         # state on the next event.
-        b = block or self.get_block(self.selected_block_id)
+        b = block or self._selected_inspector_entity()
         if b is not None:
             self._mark_dirty()
             self.engine.regenerate(b)
@@ -5320,7 +6052,7 @@ class MainWindow(QMainWindow):
             key2 = (bid, proc_index)
             self._process_type_queued.discard(key2)
             new_type = self._process_type_pending.pop(key2, None)
-            block = self.get_block(bid)
+            block = self.get_entity(bid)
             if block is None or not (0 <= proc_index < len(block.processes)) or new_type is None:
                 return
             proc = block.processes[proc_index]
@@ -5347,7 +6079,7 @@ class MainWindow(QMainWindow):
             # pure Python and the Inspector is rebuilt only after the signal
             # callback has returned to Qt.
             self.engine.generate()
-            if self.selected_block_id == block.id:
+            if self._selected_inspector_entity() is block:
                 self._refresh_inspector("PROCESS")
             else:
                 self._refresh_blocks()
@@ -5361,10 +6093,11 @@ class MainWindow(QMainWindow):
             self.engine.generate()
 
     def add_process(self):
-        b = self.get_block(self.selected_block_id)
+        b = self._selected_inspector_entity()
         if not b:
             return
-        b.processes.append(Process("Counter", "pitch", 0.25, {"length": 8, "step": 1.0, "offset": 0.0, "depth": 0.25}))
+        target = "velocity" if b.block_type == "DRUM" else "pitch"
+        b.processes.append(Process("Counter", target, 0.25, {"length": 8, "step": 1.0, "offset": 0.0, "depth": 0.25}))
         self._mark_dirty()
         self.engine.generate(); self._queue_inspector_refresh("PROCESS")
 
@@ -5375,13 +6108,13 @@ class MainWindow(QMainWindow):
             self.engine.generate(); self._queue_inspector_refresh("PROCESS")
 
     def remove_mutator(self, b, index):
-        if index < len(b.mutators):
+        if 0 <= index < len(b.mutators):
             b.mutators.pop(index)
             self._mark_dirty()
             self.engine.generate(); self._queue_inspector_refresh("MUTATION")
 
     def _tempo_changed(self, value):
-        self.project.tempo = int(value)
+        self.transport.set_tempo(value)
         self._mark_dirty()
 
     def _length_changed(self, value):
@@ -5439,8 +6172,6 @@ class MainWindow(QMainWindow):
         self.transport._release_block_notes(b.id)
         self.project.relations = [r for r in self.project.relations
                                   if r.source_block != b.id and r.destination_block != b.id]
-        if hasattr(self, "relation_graph"):
-            self.relation_graph.forget_block_position(b.id)
         self.project.blocks = [x for x in self.project.blocks if x.id != b.id]
         self._mark_dirty()
         self.transport.refresh_ports()
@@ -5456,53 +6187,23 @@ class MainWindow(QMainWindow):
         self.engine.generate(); self._refresh_all()
 
     def add_mutator(self):
-        b = self.get_block(self.selected_block_id)
+        b = self._selected_inspector_entity()
         if not b:
             return
-        d = AddMutatorDialog(self)
-        if d.exec() != QDialog.Accepted:
-            return
-        b.mutators.append(Mutator(d.kind.currentText(), d.amount.value(), d.target.currentText()))
+        target = "rhythm" if b.block_type == "DRUM" else "pitch"
+        b.mutators.append(Mutator("Rotate", .5, target))
         self._mark_dirty()
         self.engine.generate(); self._queue_inspector_refresh("MUTATION")
 
-    def add_relation(self):
+    def add_relation(self, operation='Copy'):
         if len(self.project.blocks) < 2:
             self.set_message("At least two blocks are required")
             return
-        d = RelationEditor(self.project, parent=self)
-        if d.exec() != QDialog.Accepted:
-            return
-        relation = d.value()
-        self._mark_dirty()
-        if hasattr(self, "relation_graph"):
-            self.relation_graph.add_relation(relation)
-        else:
-            self.project.relations.append(relation)
-            self.engine.generate(); self._refresh_relations()
-
-    def edit_selected_relation(self):
-        if hasattr(self, "relation_graph"):
-            index = self.relation_graph._selected_index
-            if index >= 0:
-                self.relation_graph.edit_relation(index)
-
-    def delete_relation(self):
-        if hasattr(self, "relation_graph"):
-            self.relation_graph.delete_selected_relation()
-        elif self.project.relations:
-            self.project.relations.pop()
-            self._mark_dirty()
-            self.engine.generate(); self._refresh_relations()
-
-    def _edit_relation(self, index):
-        if index < 0 or index >= len(self.project.relations):
-            return
-        d = RelationEditor(self.project, self.project.relations[index], self)
-        if d.exec() == QDialog.Accepted:
-            self.project.relations[index] = d.value()
-            self._mark_dirty()
-            self.engine.generate(); self._refresh_relations()
+        source = self.get_block(self.selected_block_id) or self.project.blocks[0]
+        destination = next(block for block in self.project.blocks if block.id != source.id)
+        part = "rhythm" if source.block_type == "DRUM" else "pitch"
+        operation = 'Dialogue' if operation == 'Dialogue' else 'Copy'
+        self.relation_graph.add_relation(Relation(source.id, part, destination.id, part, operation, 1. if operation == 'Dialogue' else .5))
 
     def refresh_midi(self):
         ports, err = get_midi_output_names()
@@ -5535,13 +6236,14 @@ class MainWindow(QMainWindow):
 
     def _write_project(self, path):
         try:
-            self.engine.director.sync_project(self.project)
-            save_project(self.project, path)
+            with self.transport._state_lock:
+                save_project(project_from_dict(document_state(self.project, self.engine)), path)
         except Exception as exc:  # serialisation errors are not OSError
             QMessageBox.critical(self, "Save failed", f"Could not save {path}:\n{exc}")
             return False
         self.current_path = path
         self._dirty = False
+        self.history_controller.saved()
         self._update_title()
         self.set_message(f"Saved {Path(path).name}")
         return True
@@ -5571,7 +6273,14 @@ class MainWindow(QMainWindow):
 
     def _install_project(self, project, path, message):
         self._installing_project = True
+        for name in ("_block_type_change_pending", "_algorithm_change_pending", "_mode_change_pending",
+                     "_process_type_pending", "_port_change_pending", "_regen_pending"):
+            pending = getattr(self, name, None)
+            if pending is not None: pending.clear()
         self.transport.stop()
+        self.transport.drum_output_history.clear()
+        self._drum_voice_clipboard = None
+        self._voice_paste_undo = {}
         self.project = project
         ensure_global_macros(self.project)
         self.engine = MusicEngine(self.project)
@@ -5591,6 +6300,8 @@ class MainWindow(QMainWindow):
         # The engine restores PhraseState from the project, but the phrase
         # combo is a separate widget and otherwise kept its previous value.
         self.performance.phrase_panel.sync_from_project()
+        self.performance.phrase_panel._save_settings()
+        self.performance.harmonic_panel.sync()
         # Restore saved Director controls before pushing them into the new engine.
         self.performance.director_panel.sync_from_project()
         self.performance.director_panel.apply_to_engine()
@@ -5598,6 +6309,8 @@ class MainWindow(QMainWindow):
         self.current_path = path
         self._dirty = False
         self._installing_project = False
+        if hasattr(self, "history_controller"):
+            self.history_controller.reset()
         self._update_title()
         self.set_message(message)
 
@@ -5633,6 +6346,14 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if hasattr(self, "theme_label"):
+            compact = self.width() < 1040
+            self.theme_label.setVisible(not compact)
+            self.midi_status.setVisible(not compact)
+            self.theme_combo.setFixedWidth(88 if compact else 105)
+            self.scale.setMaximumWidth(120 if compact else 16777215)
+            for button in (self.play, self.stop):
+                button.setStyleSheet("min-width:60px;" if compact else "")
         # Collapse the Inspector to one column when the available width becomes
         # too small. This avoids squeezing QFormLayout fields until they overlap.
         available = self.inspector_scroll.viewport().width() if hasattr(self, "inspector_scroll") else self.width()
@@ -5657,6 +6378,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
         if hasattr(self, "performance_timer"):
             self.performance_timer.stop()
+        self.history_controller.close()
         self.transport.stop()
         if hasattr(self, "transport_worker"):
             self.transport_worker.stop()
@@ -5664,14 +6386,39 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    import os
+    from contextlib import ExitStack
+    from tempfile import TemporaryDirectory
+
+    smoke_test = "--smoke-test" in sys.argv
+    with ExitStack() as resources:
+        if smoke_test:
+            # A build check must not offer or modify a user's recovery session.
+            recovery = resources.enter_context(TemporaryDirectory(prefix="auricle-smoke-"))
+            os.environ["AURICLE_RECOVERY_DIR"] = recovery
+            missing = [name for name in REQUIRED_ASSETS if not asset_path(name).is_file()]
+            if missing:
+                raise RuntimeError("Missing bundled assets: " + ", ".join(missing))
+        _run_application(smoke_test)
+
+
+def _run_application(smoke_test=False):
     app = QApplication(sys.argv)
     app.setApplicationName("Auricle")
+    app.setApplicationVersion(APP_VERSION)
     app.setStyle("Fusion")  # consistent base style under the theme stylesheet
     logo_path = asset_path("auricle_logo.png")
     if logo_path.exists():
         app.setWindowIcon(QIcon(str(logo_path)))
     win = MainWindow()
     win.show()
+    if smoke_test:
+        if win.brand_logo.pixmap().isNull() or win.help_logo.pixmap().isNull():
+            win.close()
+            raise RuntimeError("The bundled logo could not be rendered")
+        QTimer.singleShot(500, win.close)
+    else:
+        QTimer.singleShot(350, lambda: win.history_controller.offer_recovery(startup=True))
     sys.exit(app.exec())
 
 

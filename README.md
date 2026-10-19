@@ -1,53 +1,101 @@
-# Auricle Algorithmic MIDI v111
+# Auricle · Algorithmic MIDI Generator
 
-Stability release after pitch, harmony, relations, LIVE, groove, voice smoothing, validation and GUI accessibility fixes.
+**Auricle v111** — настольный генератор MIDI-партий для драм-машин, синтезаторов и DAW. Собирайте композицию из независимых блоков, развивайте мотивы и задавайте музыкальные связи между инструментами.
 
-## Included fixes
-- Pitch model separation (relative vs MIDI pitch)
-- Quantize pipeline validation
-- Diatonic harmony generation
-- Relations pipeline improvements
-- LIVE MusicalContext and Groove processing
-- Transport queue deduplication and callback error logging
-- Drum-pattern groove analysis feeding dependent generators
-- LIVE rest propagation across built-in role relations
-- Unsaved project protection in New/Open/Quit flows
-- Voice Smooth behaviour correction
-- Validation test suite
-- GUI accessibility and release cleanup
-- Core refactor: model, catalogs, engine, relations, persistence and transport
-  now live in separate modules.
-- Current v107 project schema drops legacy PERCUSSION migration paths.
-- Replaced the application logo with the new Auricle mark.
-- Added a LIVE technique adapter for timing rate, swing, humanization,
-  gate, velocity, accents and Euclidean phase.
-- Softened LIVE velocity targeting so phrase Crescendo preserves a healthy
-  baseline instead of jumping from a quiet start to a loud peak.
-- Added a compact Perform timeline and normalized Technique Curve charts in
-  every equal-width block card.
+*Auricle is a desktop algorithmic MIDI generator for hardware instruments and DAWs. Build evolving arrangements from independent drum, bass, melody, pad and chord blocks.*
 
+![Auricle v111 — Blocks, Drum Voices / Kit и глобальные макросы](docs/screenshots/auricle-v111.png)
 
-## v106
-Live relation processing now follows source dependencies, Bass groove velocity
-uses the selected Drum source, and MusicalContext carries both groove and
-harmonic authority into dependent generators.
+Скриншот пользовательского интерфейса v111. Приложение генерирует MIDI-события; звук воспроизводит подключённый инструмент или DAW.
 
-DRUM is now a Drum Machine container with independent Kick, Snare, Closed Hat,
-Open Hat, Clap and Perc voices. Each voice has its own SEQ/LIVE mode, generator,
-MIDI channel and base note. The v107 schema contains only the DRUM container for percussion.
+## Возможности
 
-## v102.1
-UI release: theme-correct colours and contrast on all 13 themes, live Perform panels,
-layout fixes and keyboard shortcuts. See CHANGELOG.md.
+- **Пять типов блоков:** DRUM, BASS, MELODY, PAD и CHORD. Для каждого доступны генератор, параметры, MIDI-выход и режим SEQ / LIVE.
+- **Drum Voices / Kit:** отдельные Kick, Snare, Hat, Tom и другие голоса, собственные ноты и каналы, общий канал кита с переопределением для голоса. Согласованный рисунок, размеры 2/4–12/8, вариации, синкопы, fills и Plan / Output.
+- **Алгоритмы и мотивы:** Euclidean, Random Walk, Markov и другие генераторы; захват мотива, вариации, история и возврат к исходной теме.
+- **Perform:** техники исполнения, кривые, таймлайн фразы и её длительность. Energy, Tension, Density и Variation доступны в общей верхней панели.
+- **Музыкальные связи:** Relations, Drum → Bass, Chord → Melody; гармонический план связывает аккорды, бас и мелодию в SEQ и LIVE.
+- **Диалог инструментов:** чередование вопроса и ответа, паузы, длина реплик, Own phrase / Echo / Contrast и наглядный таймлайн.
+- **Редактирование:** процессы и мутации в строках, Undo / Redo, восстановление прерванной сессии, отображение влияний на параметры и проекты JSON.
+- **Наблюдение и оформление:** MIDI Monitor, piano roll, цветные блоки, темы интерфейса и встроенная справка на русском и английском.
 
-Run: `./run.sh` (Linux/macOS) or `setup_windows.bat` then `run_windows.bat` (Windows).
-Build a Windows app with `build_windows.bat` (see docs/WINDOWS_BUILD.md).
+## Текущий релиз
 
-## Perform: phrase duration
+**v111** объединяет развитие мотивов, согласованный Drum Kit, гармонический план с ограничением регистра, диалог инструментов, историю изменений и обновлённые assets.
 
-Use **GLOBAL PHRASE → Duration · beats** to set the phrase length from 4 to
-256 quarter-note beats. In 4/4, 16 beats equals four bars; at 120 BPM it lasts
-eight seconds. All stages stretch proportionally. Changing Duration while
-the phrase plays preserves its current progress. Phrase selection, Duration
-and Amount are saved in the project. The main transport LENGTH still controls
-the pattern length; the card's Length controls an individual technique.
+Этот комплект содержит полный проект. Устанавливать предыдущие patch-архивы не требуется. [Описание текущего релиза](RELEASE_NOTES.md) · [Подробная история изменений](CHANGELOG.md).
+
+## Быстрый запуск
+
+Рекомендуется **Python 3.12**. Минимальная версия в метаданных пакета — 3.10. Основные зависимости: PySide6, mido и python-rtmidi.
+
+**Windows:** установите Python 3.12 x64 с Python Launcher, затем запустите:
+
+```bat
+setup_windows.bat
+run_windows.bat
+```
+
+**Linux / macOS:**
+
+```sh
+bash run.sh
+```
+
+При первом запуске скрипт создаст `.venv` и установит зависимости. Если установка прервалась, выполните `.venv/bin/python -m pip install -r requirements.txt` и повторите запуск. Linux может потребовать системные библиотеки Qt и ALSA: [инструкция](docs/BUILDING.md#linux).
+
+**Ручная установка** в активированное виртуальное окружение:
+
+```sh
+python -m pip install .
+auricle
+```
+
+Для разработки можно использовать `python -m pip install -e ".[dev]"` и `python auricle_gui.py`.
+
+## Первые шаги
+
+1. Подключите MIDI-устройство или настройте виртуальный MIDI-порт для DAW.
+2. Откройте JSON-проект из `examples/` через **Open** или создайте блоки самостоятельно.
+3. Выберите существующий MIDI-выход и каналы, соответствующие принимающим инструментам. Для DRUM проверьте назначение нот на вашей драм-машине.
+4. Нажмите **PLAY**. Меняйте глобальные макросы, техники Perform, мотивы и Relations во время исполнения.
+
+Без MIDI-выхода можно редактировать проект и наблюдать генерацию; самого звука Auricle не синтезирует. Имена портов в демонстрационных проектах нужно согласовать со своей системой.
+
+## Демонстрационные проекты
+
+| Файл в `examples/` | Что показывает |
+| --- | --- |
+| `auricle_demo_all_blocks.json` | Все типы блоков |
+| `instrument_dialogue_demo.json` | Вопрос и ответ между инструментами |
+| `harmony_plan_demo.json` | Общий гармонический план |
+| `drum_variations_7_8.json` | Размер 7/8 и вариативный Drum Kit |
+| `drum_output_chance_demo.json` | Plan / Output, вероятность шагов |
+| `motif_development_stage2.json` | Развитие и возврат мотивов |
+
+В нативных сборках примеры также вложены в ресурсы приложения: пути указаны в [инструкции сборки](docs/BUILDING.md).
+
+## Сборка и GitHub
+
+- [Сборка Windows, Linux AppImage, macOS и Python-пакета](docs/BUILDING.md).
+- [Публикация репозитория и релиза](docs/PUBLISHING.md).
+- `ci.yml` проверяет тесты, Python wheel/sdist и запуск установленного пакета.
+- `release.yml` собирает Windows x64, Linux x64, macOS Apple Silicon и Intel. Ручной запуск сохраняет артефакты; push тега `v111` создаёт GitHub Release с описанием и контрольными суммами.
+
+Все платформы собираются на соответствующих системах. Автоматические сборки не настроены на подпись Windows или notarization macOS.
+
+## Устройство проекта
+
+`auricle_gui.py` — интерфейс Qt. Модель, движок, DRUM, связи, сохранение и транспорт находятся в `auricle_model.py`, `auricle_engine.py`, `auricle_drum.py`, `auricle_relations.py`, `auricle_persistence.py`, `auricle_transport.py`. `auricle_core.py` объединяет публичные импорты. Мотивы, harmonic plan и dialogue вынесены в отдельные модули.
+
+`assets/` содержит исходные PNG / ICO / ICNS; `examples/` — проекты; `tests/` — проверки; `docs/` — руководства; `packaging/` — упаковку релиза.
+
+## Руководства
+
+- [Диалог инструментов](docs/INSTRUMENT_DIALOGUE_RU.md)
+- [История, влияния параметров и harmonic plan](docs/HISTORY_HARMONY_RU.md)
+- [Drum Kit: размеры и вариации](docs/DRUM_KIT_VARIATIONS_RU.md)
+- [Drum Kit: Output и вероятность шагов](docs/KIT_WORKFLOW_RU.md)
+- [Развитие мотивов](docs/MOTIF_STAGE2_RU.md)
+
+Ранние руководства описывают отдельные этапы разработки; их указания по установке patch-архивов не относятся к этому полному комплекту. Лицензия проекта пока не задана владельцем; этот архив не добавляет лицензионных условий от его имени.

@@ -1,3 +1,3 @@
 APP_VERSION = "v111"
-# compatibility marker for v110 project checks
-# APP_VERSION = "v110"
+# PEP 440 version used by Python wheels and macOS bundle metadata.
+PACKAGE_VERSION = "111.0.0"

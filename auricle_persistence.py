@@ -16,6 +16,13 @@ def _from_dict(cls, data: dict):
     return cls(**{k: v for k, v in dict(data).items() if k in names})
 
 
+def _drum_voice_from_dict(data: dict) -> DrumVoice:
+    voice = _from_dict(DrumVoice, data)
+    voice.mutators = [_from_dict(Mutator, item) for item in data.get("mutators", [])]
+    voice.processes = [_from_dict(Process, item) for item in data.get("processes", [])]
+    return voice
+
+
 def _json_default(value):
     if isinstance(value, (set, frozenset, tuple)):
         return list(value)
@@ -48,6 +55,27 @@ def save_project(project: Project, filename: str):
 def load_project(filename: str) -> Project:
     with open(filename, "r", encoding="utf-8") as f:
         data = json.load(f)
+    return project_from_dict(data)
+
+
+def project_from_dict(data: dict, normalize=True) -> Project:
+    """Build a fresh project without file I/O (history and recovery use this)."""
+    if not isinstance(data, dict) or not isinstance(data.get("blocks", []), list):
+        raise ValueError("Invalid Auricle project")
+    if not normalize:
+        # History is already a validated in-memory document. Loading defaults
+        # would turn Undo into an extra edit (and lose intentionally absent keys).
+        restored = _from_dict(Project, data)
+        restored.blocks = []
+        for payload in data.get("blocks", []):
+            block = _from_dict(Block, payload)
+            block.mutators = [_from_dict(Mutator, m) for m in payload.get("mutators", [])]
+            block.processes = [_from_dict(Process, p) for p in payload.get("processes", [])]
+            voices = payload.get("drum_voices")
+            block.drum_voices = [_drum_voice_from_dict(v) for v in voices] if voices is not None else None
+            restored.blocks.append(block)
+        restored.relations = [_from_dict(Relation, r) for r in data.get("relations", [])]
+        return restored
     blocks = []
     for index, b in enumerate(data.get("blocks", []), start=1):
         block_type = str(b.get("block_type", "MELODY")).upper()
@@ -69,7 +97,7 @@ def load_project(filename: str) -> Project:
             outputs=dict(b.get("outputs", {})),
             color=b.get("color", ""),
             muted=bool(b.get("muted", False)),
-            drum_voices=[_from_dict(DrumVoice, voice) for voice in voice_payload] if voice_payload is not None else None,
+            drum_voices=[_drum_voice_from_dict(voice) for voice in voice_payload] if voice_payload is not None else None,
         ))
         apply_role_defaults(blocks[-1])
         if blocks[-1].block_type == "DRUM":
@@ -100,6 +128,7 @@ def load_project(filename: str) -> Project:
         performance=dict(data.get("performance", {})),
         motifs=dict(data.get("motifs", {})),
         phrase_state=dict(data.get("phrase_state", {})),
+        harmonic_plan=dict(data.get("harmonic_plan", {})),
     )
 
 

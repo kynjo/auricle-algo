@@ -95,7 +95,7 @@ MUTATORS = [
 ]
 RELATION_CURVES = ["Linear", "Exponential", "Logarithmic", "Threshold", "Quantize"]
 RELATION_DELAYS = [0, 1, 2, 4, 8]
-RELATIONS = ["Copy", "Mix", "Quantize To", "Modulate", "Follow", "Trigger"]
+RELATIONS = ["Copy", "Mix", "Quantize To", "Modulate", "Follow", "Trigger", "Dialogue"]
 PROCESS_TYPES = ["Counter", "Modulo", "Compare", "Clock Divide", "Clock Multiply", "Memory", "Delay", "Feedback", "Parameter Modulation"]
 PROCESS_TARGETS = list(PARTS)
 DEFAULT_PATTERN = "1,0,0.7,0,1,0,0.5,0"
@@ -103,9 +103,14 @@ DEFAULT_PATTERN = "1,0,0.7,0,1,0,0.5,0"
 # Block parameters that are text/choice values and therefore never modulation
 # or macro destinations.
 NON_NUMERIC_PARAMETERS = frozenset({
+    "harmonic_follow",
+    "pattern_step_chances",
+    "kit_meter", "kit_protect_anchors", "kit_variant",
     "scale_name", "pattern", "arp_pattern", "arp_direction", "arp_octave_mode", "ls_axiom",
     "ls_rule_a", "ls_rule_b", "ls_mode", "ls_mapping", "ca_seed", "scale_weights",
-    "variation_seed", "poly_mode", "debruijn_mode", "ca_mode", "groove_mode",
+    "variation_seed", "poly_mode", "debruijn_mode", "ca_mode", "groove_mode", "motif_id", "motif_step_beats",
+    "motif_development", "motif_amount", "motif_every", "motif_return", "motif_hold",
+    "kit_coordinated", "kit_style", "kit_phrase_bars", "kit_role",
 })
 
 # Real generator parameters exposed to cross-block Parameter Modulation,
@@ -113,6 +118,9 @@ NON_NUMERIC_PARAMETERS = frozenset({
 # parameters present in a block's JSON are added automatically, so the catalog
 # is also backward-compatible with custom/older projects.
 FLOAT_MOD_KEYS = {
+    "harmonic_strength",
+    "kit_density", "kit_swing", "kit_humanize", "kit_fill", "kit_complexity",
+    "kit_syncopation", "kit_tom_activity", "kit_variation",
     "fill_density", "event_probability", "transpose", "octave", "tm_density", "fib_density",
     "markov_rest", "markov_leap", "markov_stay", "walk_return_bias", "walk_drift",
     "interval_return", "interval_leap", "scale_direction", "scale_leap", "scale_octave_spread",

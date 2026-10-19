@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 import time
+from dataclasses import asdict, replace
 from typing import Optional
 
 from auricle_catalogs import *  # noqa: F401,F403
@@ -16,10 +17,22 @@ from motif_engine import Motif, MotifEngine, PhraseState, TensionCurve
 from music_director import MusicDirector
 from voice_leading import VoiceLeading
 from relation_context import MusicalContext, analyze_groove, default_relations
+from auricle_drum import fill_at, kit_value, kit_random, live_timing_factor
+from musical_clock import MusicalClock
+from motif_development import MotifDevelopment
+from coordinated_kit import KitCoordinator, coordinated, STEP_BEATS, CREATIVE_DEFAULTS
+from motif_development import digest
+from pattern_chance import chance_at
+from parameter_influence import ParameterInfluence
+from harmonic_plan import HarmonicRuntime
+from instrument_dialogue import DialogueRuntime
 
 class MusicEngine:
     def __init__(self, project: Project):
         self.project = project
+        self.parameter_influence = ParameterInfluence()
+        self.harmonic_runtime = HarmonicRuntime(project)
+        self.dialogue_runtime = DialogueRuntime(project)
         self.live_rng: dict[int, random.Random] = {}
         self.live_state: dict[int, dict[str, Any]] = {}
         self.pending_parameter_modulations: dict[tuple[int, str], float] = {}
@@ -28,6 +41,14 @@ class MusicEngine:
         # Pre-relation SEQ material per block. Relations are always applied on
         # top of this, so calling apply_relations() repeatedly is idempotent.
         self._base_outputs: dict[int, dict[str, list[float]]] = {}
+        self.clock = MusicalClock(project.tempo)
+        self._seq_motifs = {}
+        self._seq_motif_tokens = {}
+        self.motif_development = MotifDevelopment()
+        self.kit_coordinator = KitCoordinator()
+        self._seq_kit_tokens = {}
+        self._kit_source_cache = {}
+        self._kit_live_slots = {}
         self.performance = PerformanceRuntime(project, self)
         # v100 musical director pipeline
         self.director = MusicDirector(project)
@@ -161,7 +182,7 @@ class MusicEngine:
         offset = int(_as_float(params.get("groove_offset", 0), 0))
         replace = str(params.get("groove_mode", "Union")).strip().lower() == "replace"
         # A LIVE bass holds one event: align it with the drum's current step.
-        live_base = self.source_positions.get(drum.id, 0) if bass.mode == "LIVE" and drum.mode != "LIVE" else 0
+        live_base = self.source_positions.get(drum.id, 0) if bass.mode == "LIVE" and (drum.mode != "LIVE" or coordinated(drum)) else 0
         rhythm, velocity, duration, accents = [], [], [], []
         for i, base_hit in enumerate(base_rhythm):
             source_index = live_base + i + offset
@@ -210,6 +231,8 @@ class MusicEngine:
 
     def _apply_chord_to_melody(self, chord: Block, melody: Block):
         """Pull melody pitches toward the nearest active chord tone."""
+        if self.harmonic_runtime.follows(melody):
+            return  # The bar plan is resolved once, after all stream relations.
         base_amount = _clamp(float(melody.parameters.get("harmony_anchor", 0.55)), 0.0, 1.0)
         # MusicalContext is the harmonic authority.  Keep the default context
         # neutral (0.5 => unchanged) while allowing active chord confidence to
@@ -287,6 +310,7 @@ class MusicEngine:
         """Return whether a visible relation replaces a built-in role route."""
         return any(
             getattr(relation, "enabled", True)
+            and relation.algorithm != 'Dialogue'
             and int(getattr(relation, "source_block", -1)) == int(source.id)
             and int(getattr(relation, "destination_block", -1)) == int(destination.id)
             and str(getattr(relation, "source_part", "")) == source_part
@@ -378,6 +402,8 @@ class MusicEngine:
         self.parameter_modulation_state.clear()
         self.delayed_parameter_modulations.clear()
         self.source_positions.clear()
+        self._kit_live_slots.clear()
+        self._kit_source_cache.clear()
         # Voice-leading history belongs to a live session.  Keeping it after
         # reset or STOP->PLAY causes the first notes of a new phrase to be
         # pulled toward an unrelated previous phrase.
@@ -454,6 +480,17 @@ class MusicEngine:
             values = values[rotate:] + values[:rotate]
         scale = max(0.0, float(p.get("pattern_scale", 1.0)))
         return [v * scale for v in values]
+
+    def pattern_step_allowed(self, block, slot):
+        """A reproducible per-pass output gate, independent of cached SEQ data."""
+        if (block.algorithm != "Pattern" or "pattern_step_chances" not in block.parameters
+                or self.active_motif(block) is not None):
+            return True
+        buffered = (block.mode == "SEQ" or self.coordinated_drum(block) is not None
+                    or self._drum_window_processing_needed(block))
+        cycle = self._kit_cycle_length(block) if buffered else None
+        chance = chance_at(block.parameters, slot, cycle)
+        return chance >= 1. or (chance > 0. and kit_random(self._seed_for(block), int(slot), 113) < chance)
 
     # ---- SEQ generation ---------------------------------------------------
     def _seq_material(self, block: Block, length: int, rng: random.Random) -> list:
@@ -590,6 +627,8 @@ class MusicEngine:
         """Expose the union of child voices as the parent DRUM source."""
         voices = ensure_drum_voices(drum)
         size = max((len(v.outputs.get("rhythm", [])) for v in voices), default=0)
+        if coordinated(drum):
+            size = self.kit_coordinator.plan(drum, self.project.seed, self.clock.position_beats).length
         if not size:
             drum.outputs = {part: [] for part in PARTS}
             self._base_outputs[drum.id] = {part: [] for part in PARTS}
@@ -599,7 +638,13 @@ class MusicEngine:
         duration = [0.0] * size
         accent = [0.0] * size
         for voice in voices:
+            if voice.muted:
+                continue
             for i in range(size):
+                if coordinated(drum, voice) and voice.mode == "LIVE":
+                    slot = self._kit_live_slots.get(voice.id)
+                    if slot is None or i != slot % size:
+                        continue
                 hit = self._stream_value(voice.outputs.get("rhythm", []), i)
                 rhythm[i] = max(rhythm[i], hit)
                 velocity[i] = max(velocity[i], self._stream_value(voice.outputs.get("velocity", []), i))
@@ -616,27 +661,309 @@ class MusicEngine:
         for voice in ensure_drum_voices(drum):
             if voice.mode == "SEQ":
                 self.generate_block(voice)
-            else:
+            elif not self.live_state.get(voice.id, {}).get("events"):
                 voice.outputs = {part: [] for part in PARTS}
         self._aggregate_drum_outputs(drum)
 
-    def _apply_active_motif(self, block: Block, representation: MusicalRepresentation):
-        state=self.director.phrase
-        if not state.running or not state.active_motifs:
+    def _kit_cycle_length(self, block):
+        return max(1, min(int(self.project.length), int(block.parameters.get("structure_length", self.project.length))))
+
+    def _kit_fill_at(self, block, index):
+        drum = self.drum_parent_for(block)
+        if coordinated(drum, block):
+            return False
+        return drum is not None and fill_at(drum, self._seed_for(block), index, self._kit_cycle_length(block))
+
+    def coordinated_drum(self, block):
+        drum = self.drum_parent_for(block)
+        return drum if coordinated(drum, block) else None
+
+    def kit_plan(self, block, beat=None):
+        drum = self.coordinated_drum(block)
+        if drum is None:
+            return None
+        return self.kit_coordinator.plan(drum, self.project.seed,
+                                         self.clock.position_beats if beat is None else beat)
+
+    def _apply_kit_plan(self, block, representation, plan, start_slot):
+        if plan is None:
             return
-        candidates=[self.director.motifs.motifs.get(mid) for mid in state.active_motifs]
-        motif=next((m for m in candidates if m and str(m.role).upper()==str(block.block_type).upper()), None)
-        if motif is None:
-            return
-        for i in range(len(representation.rhythm)):
-            if motif.rhythm:
-                hit=float(motif.rhythm[i % len(motif.rhythm)])
+        for i, hit in enumerate(representation.rhythm):
+            decision = plan.at(block.id, start_slot + i)
+            if not decision.allowed:
+                for part in ("rhythm", "velocity", "duration", "density", "accent"):
+                    getattr(representation, part)[i] = 0.0
+            elif hit > 0 or decision.force:
+                representation.rhythm[i] = representation.density[i] = 1.0
+                velocity = representation.velocity[i] if hit > 0 else float(self._live_parameter(block, "velocity_base", .72))
+                representation.velocity[i] = _clamp(velocity * decision.accent, 0.0, 1.0)
                 if hit <= 0:
-                    representation.rhythm[i]=0.0; representation.velocity[i]=0.0; representation.duration[i]=0.0
-            if representation.rhythm[i] > 0 and motif.notes:
-                representation.pitch[i]=float(motif.notes[i % len(motif.notes)])
-            if representation.rhythm[i] > 0 and motif.velocity:
-                representation.velocity[i]=_clamp(float(motif.velocity[i % len(motif.velocity)]),0.0,1.0)
+                    representation.duration[i] = float(self._live_parameter(block, "gate", block.parameters.get("live_gate", .78)))
+                representation.accent[i] = float(representation.velocity[i] >= .85)
+
+    def _drum_window_processing_needed(self, block):
+        parent = self.drum_parent_for(block)
+        return parent is not None and any(owner.processes or any(m.target != "pitch" for m in owner.mutators)
+                                          for owner in (block, parent))
+
+    def _kit_live_source(self, block, slot, plan, variant):
+        """Process a complete musical window, then read the scheduled slot.
+
+        LIVE used to run Rotate/Delay/Counter on a one-element list, losing
+        both phase and history. Source edits invalidate this bounded cache.
+        """
+        parent = self.drum_parent_for(block)
+        active = self.performance.active.get(block.id)
+        source = replace(block, parameters={**block.parameters, **(active.current_values if active is not None else {})})
+        # LIVE gate may differ from the sequencer gate. Preserve the live
+        # adapter override while processing durations over the whole window.
+        source.parameters["gate"] = self._live_parameter(block, "gate", block.parameters.get("live_gate", .65))
+        size = plan.length if plan is not None else (variant.motif.steps if variant is not None else self._kit_cycle_length(block))
+        start = plan.start_slot if plan is not None else (slot // size) * size
+        key = (start, size, plan.token if plan else None, variant.token if variant else None,
+               source.algorithm, digest(source.parameters), digest([asdict(m) for m in source.mutators]),
+               digest([asdict(p) for p in source.processes]),
+               digest((parent.parameters, [asdict(m) for m in parent.mutators], [asdict(p) for p in parent.processes])),
+               self._seed_for(block))
+        cached = self._kit_source_cache.get(block.id)
+        if cached is None or cached[0] != key:
+            rng = random.Random(self._seed_for(block) + (start // size) * 7919)
+            cycle = self._kit_cycle_length(block)
+            seq = list(self._seq_material(source, cycle, rng))[:cycle]
+            seq = (seq * (cycle // len(seq) + 1))[:cycle] if seq else [None] * cycle
+            rotation = int(source.parameters.get("structure_rotation", 0)) % cycle
+            seq = seq[rotation:] + seq[:rotation]
+            seq = [seq[(start + i) % cycle] for i in range(size)]
+            rep = self._make_representation(source, seq, rng)
+            if plan is None:
+                self._apply_kit_fills(source, rep)
+            self._apply_active_motif(source, rep, variant=variant, start_slot=start)
+            self._apply_kit_plan(source, rep, plan, start)
+            self._apply_fill_density(source, rep, rng)
+            self._process_kit_material(source, rep, rng, plan, start)
+            self._kit_source_cache[block.id] = (key, rep)
+        else:
+            rep = cached[1]
+        i = slot % size
+        return MusicalRepresentation(**{part: [getattr(rep, part)[i]] for part in PARTS})
+
+    def _process_kit_material(self, block, representation, rng, plan=None, start_slot=0):
+        parent = self.drum_parent_for(block)
+        if parent is None:
+            self._apply_representation_mutators(block, representation, rng)
+            self._apply_processes(block, representation, rng)
+            return
+        protect = bool(parent.parameters.get("kit_protect_anchors", True))
+        anchors = {i for i, hit in enumerate(representation.rhythm)
+                   if protect and plan is not None and hit > 0 and plan.at(block.id, start_slot + i).anchor}
+        old_accent = list(representation.accent)
+        owners = (block, parent)
+        for owner in owners:
+            self._apply_drum_mutators(owner, representation, rng)
+            for process in owner.processes:
+                previous = list(representation.rhythm)
+                self._apply_processes(replace(owner, processes=[process]), representation, rng)
+                if process.target == "rhythm" and process.type != "Parameter Modulation":
+                    self._seed_new_drum_hits(owner, representation, previous)
+        for i in anchors:
+            # Rhythm-only stages retain dynamics, so no velocity/duration
+            # restoration is necessary. In particular, a later rhythm gate
+            # must not undo an explicit velocity, duration or density zero.
+            representation.rhythm[i] = 1.
+        if parent is not None:
+            targets = {p.target for owner in owners for p in owner.processes if p.type != "Parameter Modulation"}
+            for i, hit in enumerate(representation.rhythm):
+                if "accent" in targets:
+                    representation.velocity[i] = _clamp(representation.velocity[i] + .18 *
+                        (_clamp(representation.accent[i], 0., 1.) - old_accent[i]), 0., 1.)
+                gated = "density" in targets and kit_random(self._seed_for(block), start_slot + i, 94) >= _clamp(representation.density[i], 0., 1.)
+                if hit <= 0 or gated or representation.velocity[i] <= 0 or representation.duration[i] <= 0:
+                    for part in ("rhythm", "velocity", "duration", "density", "accent"):
+                        getattr(representation, part)[i] = 0.
+                else:
+                    representation.rhythm[i] = 1.
+                    representation.velocity[i] = _clamp(representation.velocity[i], 0., 1.)
+
+    @staticmethod
+    def _seed_new_drum_hits(owner, representation, previous):
+        """Give new rhythm hits a voice without undoing explicit dynamics gates."""
+        for i, hit in enumerate(representation.rhythm):
+            if hit > 0 and previous[i] <= 0:
+                representation.velocity[i] = _clamp(float(owner.parameters.get("velocity_base", .72)), .05, 1.)
+                representation.duration[i] = _clamp(float(owner.parameters.get("gate", .78)), .03, 1.5)
+                representation.density[i] = 1.
+
+    def _apply_drum_mutators(self, owner, representation, rng):
+        # The generic mutation normalizer rebuilds density/accent/duration,
+        # even for an empty chain. On a kit bus that erased the voice's prior
+        # processes and revived explicit velocity/duration zeroes.
+        for target, part in (("rhythm", "rhythm"), ("pitch", "pitch"),
+                             ("velocity", "velocity"), ("timing", "duration")):
+            intensity = _clamp(float(owner.parameters.get(f"mutation_{target}", 1.)), 0., 1.)
+            for mutator in owner.mutators:
+                if mutator.target != target or intensity <= 0:
+                    continue
+                previous = list(representation.rhythm)
+                scaled = Mutator(mutator.name, float(mutator.amount) * intensity, target)
+                values = mutate_sequence(list(getattr(representation, part)), scaled, rng)
+                if target == "rhythm":
+                    values = [float(v > .5) for v in values]
+                elif target == "velocity":
+                    values = [_clamp(v, 0., 1.) for v in values]
+                elif target == "timing":
+                    values = [max(0., v) for v in values]
+                setattr(representation, part, values)
+                if target == "rhythm":
+                    self._seed_new_drum_hits(owner, representation, previous)
+
+    def _apply_kit_fills(self, block, representation):
+        """Add candidates before voice density, mutations and processes."""
+        if self.drum_parent_for(block) is None:
+            return
+        for i, hit in enumerate(representation.rhythm):
+            if hit <= 0 and self._kit_fill_at(block, i):
+                representation.rhythm[i] = representation.density[i] = 1.0
+                representation.pitch[i] = 0.0
+                representation.velocity[i] = _clamp(float(block.parameters.get("velocity_base", .72)), .05, 1.0)
+                representation.duration[i] = _clamp(float(block.parameters.get("gate", .78)), .05, 1.5)
+                representation.accent[i] = float(representation.velocity[i] >= .85)
+
+    def _apply_kit_output(self, block, representation, start_index=0):
+        """Master retention and expressive dynamics, after voice processing."""
+        drum = self.drum_parent_for(block)
+        if drum is None:
+            return
+        density = kit_value(drum, "kit_density")
+        humanize = kit_value(drum, "kit_humanize")
+        seed = self._seed_for(block)
+        plan = self.kit_plan(block, start_index * STEP_BEATS)
+        voice_silent = self._fill_density_value(block) <= 0
+        for i, hit in enumerate(representation.rhythm):
+            if hit <= 0:
+                continue
+            index = start_index + i
+            if voice_silent or (plan is not None and not plan.can_emit(block.id, index, bool(drum.parameters.get("kit_protect_anchors", True)))) or density <= 0 or (density < 1 and kit_random(seed, index, 0) >= density):
+                for part in ("rhythm", "velocity", "duration", "density", "accent"):
+                    getattr(representation, part)[i] = 0.0
+            elif humanize:
+                factor = 1.0 + (2.0 * kit_random(seed, index, 2) - 1.0) * .15 * humanize
+                representation.velocity[i] = _clamp(representation.velocity[i] * factor, 0.0, 1.0)
+
+    def active_motif(self, block):
+        """Explicit per-entity binding, or the selected phrase's role motif."""
+        if "motif_id" in block.parameters:
+            candidates = [self.director.motifs.motifs.get(str(block.parameters["motif_id"]))]
+        else:
+            state = self.director.phrase
+            owner = getattr(block, "parent_id", block.id)
+            if not state.running or (state.block_ids and block.id not in state.block_ids and owner not in state.block_ids):
+                return None
+            candidates = [self.director.motifs.motifs.get(mid) for mid in state.active_motifs]
+        return next((m for m in candidates if m and str(m.role).upper() == str(block.block_type).upper()), None)
+
+    def motif_step_beats(self, block, motif=None):
+        motif = motif or self.active_motif(block)
+        if motif is None:
+            return None
+        if self.coordinated_drum(block) is not None:
+            return STEP_BEATS
+        # Motif timing is explicit musical time. Generator timing_rate and
+        # random LIVE intervals do not change the motif's rhythmic identity.
+        return motif.step_duration(block.parameters.get("motif_step_beats"))
+
+    def _motif_velocity(self, block, motif, index):
+        authored = float(motif.velocity[index % len(motif.velocity)]) if motif.velocity else .72
+        target = _clamp(float(self._live_parameter(block, "velocity_base", .72)), 0.0, 1.0)
+        accent = _clamp(float(self._live_parameter(block, "velocity_accent", 0.0)), 0.0, 1.0)
+        # Preserve the authored contour at neutral settings. A gentle offset
+        # keeps dynamics responsive to Perform without compressing the motif
+        # toward a constant velocity differently in SEQ and LIVE.
+        return _clamp(authored + (target - .72) * .55 + accent * .35, 0.0, 1.0)
+
+    def motif_variant(self, block, beat=None):
+        source = self.active_motif(block)
+        if source is None:
+            return None
+        position = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        return self.motif_development.resolve(
+            block.id, source, position, self.motif_step_beats(block, source),
+            block.parameters, self._scale(block), self.project.seed, self.clock.running)
+
+    def hold_motif(self, block, enabled=True, token=None):
+        source = self.active_motif(block)
+        if not enabled:
+            block.parameters.pop("motif_hold", None)
+            return True
+        if source is None:
+            return False
+        self.motif_variant(block)
+        hold = self.motif_development.hold(block.id, source.id, token)
+        if hold is None:
+            return False
+        block.parameters["motif_hold"] = hold
+        return True
+
+    def capture_motif(self, block, current_variant=False):
+        """Capture a raw generator theme or save the current source variant.
+
+        Capturing precedes mutations, relations and macros, so assigning the
+        resulting motif doesn't apply those transformations twice. For LIVE,
+        this is a deterministic generator preview, not a MIDI recording.
+        """
+        if getattr(block, "drum_voices", None) is not None and not getattr(block, "is_drum_voice", False):
+            return None
+        if current_variant:
+            variant = self.motif_variant(block)
+            if variant is None:
+                return None
+            material = variant.motif
+            title = f"{block.name} · {variant.label}"
+        else:
+            length = max(1, min(128, int(self.project.length), int(block.parameters.get("structure_length", self.project.length))))
+            rng = random.Random(self._seed_for(block))
+            source = replace(block, parameters={**block.parameters, "velocity_base": .72, "velocity_accent": 0.0})
+            seq = list(self._seq_material(source, length, rng))[:length]
+            seq = (seq * (length // len(seq) + 1))[:length] if seq else [None] * length
+            rotation = int(block.parameters.get("structure_rotation", 0)) % length
+            seq = seq[rotation:] + seq[:rotation]
+            rep = self._make_representation(source, seq, rng)
+            step = .25 / _clamp(float(block.parameters.get("timing_rate", 1)), .25, 4)
+            material = Motif("", "", role=block.block_type, notes=list(rep.pitch),
+                             rhythm=list(rep.rhythm), velocity=list(rep.velocity), step_beats=step)
+            title = f"{block.name} · theme"
+        number = 1
+        while f"captured_{number}" in self.director.motifs.motifs:
+            number += 1
+        motif = replace(material, id=f"captured_{number}", name=f"{title} {number}",
+                        notes=list(material.notes), rhythm=list(material.rhythm),
+                        velocity=list(material.velocity), variations={})
+        self.director.motifs.register(motif)
+        # Project data owns new captures immediately, including headless saves.
+        self.project.motifs[motif.id] = asdict(motif)
+        block.parameters.update(motif_id=motif.id, motif_step_beats=motif.step_duration(), motif_development="off")
+        block.parameters.pop("motif_hold", None)
+        self.motif_development.forget(block.id)
+        self.regenerate(block)
+        return motif
+
+    def _apply_active_motif(self, block, representation, beat=None, variant=None, start_slot=None):
+        variant = variant or self.motif_variant(block, beat)
+        if variant is None:
+            return
+        motif = variant.motif
+        start = motif.index_at(beat, self.motif_step_beats(block, motif)) if beat is not None else 0
+        if start_slot is not None:
+            start = start_slot % motif.steps
+        gate = _clamp(float(self._live_parameter(block, "gate", block.parameters.get("live_gate", .78))), .05, 1.5)
+        for i in range(len(representation.rhythm)):
+            index = (start + i) % motif.steps
+            hit = float(motif.rhythm[index % len(motif.rhythm)]) > 0 if motif.rhythm else True
+            representation.rhythm[i] = representation.density[i] = float(hit)
+            representation.pitch[i] = float(motif.notes[index % len(motif.notes)]) if motif.notes else 0.0
+            velocity = self._motif_velocity(block, motif, index)
+            representation.velocity[i] = _clamp(velocity, 0.0, 1.0) if hit else 0.0
+            representation.duration[i] = gate if hit else 0.0
+            representation.accent[i] = float(hit and velocity >= .85)
 
     def _apply_global_macros(self, block: Block, representation):
         """Apply the always-visible global character controls.
@@ -668,15 +995,18 @@ class MusicEngine:
                 depth = (variation - .5) * (.32 if role in PERCUSSIVE_TYPES else .20)
                 representation.velocity[i] = _clamp(representation.velocity[i] * (1.0 + direction * depth), 0.0, 1.0)
 
-    def generate_block(self, block: Block):
+    def generate_block(self, block: Block, motif_beat=None):
         if (str(block.block_type).upper() == "DRUM"
                 and not getattr(block, "is_drum_voice", False)
                 and getattr(block, "drum_voices", None) is not None):
             self._generate_drum_container(block)
             return
         rng = random.Random(self._seed_for(block))
-        project_length = max(1, int(self.project.length))
-        cycle_length = max(1, min(project_length, int(block.parameters.get("structure_length", project_length))))
+        motif = self.active_motif(block)
+        variant = self.motif_variant(block, motif_beat)
+        plan = self.kit_plan(block, motif_beat)
+        project_length = plan.length if plan is not None else (motif.steps if motif is not None else max(1, int(self.project.length)))
+        cycle_length = self._kit_cycle_length(block) if plan is not None else (project_length if motif is not None else max(1, min(project_length, int(block.parameters.get("structure_length", project_length)))))
         sequence = list(self._seq_material(block, cycle_length, rng))[:cycle_length]
         sequence = (sequence * (cycle_length // max(1, len(sequence)) + 1))[:cycle_length] if sequence else [None] * cycle_length
         # STRUCTURE rotation is a post-generator operation: it is independent
@@ -686,12 +1016,16 @@ class MusicEngine:
             sequence = sequence[rotation:] + sequence[:rotation]
         # Keep the transport length equal to the project length while allowing
         # each block to have its own shorter musical cycle.
-        sequence = (sequence * (project_length // max(1, len(sequence)) + 1))[:project_length]
+        if plan is not None:
+            sequence = [sequence[(plan.start_slot + i) % len(sequence)] for i in range(project_length)]
+        else:
+            sequence = (sequence * (project_length // max(1, len(sequence)) + 1))[:project_length]
         representation = self._make_representation(block, sequence, rng)
+        self._apply_kit_fills(block, representation)
+        self._apply_active_motif(block, representation, variant=variant, start_slot=plan.start_slot if plan is not None else None)
+        self._apply_kit_plan(block, representation, plan, plan.start_slot if plan is not None else 0)
         self._apply_fill_density(block, representation, rng)
-        self._apply_active_motif(block, representation)
-        self._apply_representation_mutators(block, representation, rng)
-        self._apply_processes(block, representation, rng)
+        self._process_kit_material(block, representation, rng, plan, plan.start_slot if plan is not None else 0)
         self._apply_relation_context(block, representation)
         if str(block.block_type).upper() not in ("DRUM", "CHORD"):
             self.update_musical_context()
@@ -757,8 +1091,12 @@ class MusicEngine:
         # the final output must still obey the selected key.
         if block.block_type not in PERCUSSIVE_TYPES:
             representation.pitch = [self._quantize_pitch(block, v) for v in representation.pitch]
+        self._apply_kit_output(block, representation, plan.start_slot if plan is not None else 0)
         block.outputs = representation.as_outputs()
         self._base_outputs[block.id] = representation.as_outputs()
+        self._seq_motifs[block.id] = motif
+        self._seq_motif_tokens[block.id] = variant.token if variant is not None else None
+        self._seq_kit_tokens[block.id] = plan.token if plan is not None else None
 
     def update_musical_context(self):
         """Refresh shared context from the current authorities."""
@@ -816,7 +1154,8 @@ class MusicEngine:
         # Generate rhythm/harmony authorities first so dependent generators
         # receive a real MusicalContext during their own generation pass.
         authorities = [b for b in self.project.blocks
-                       if b.mode == "SEQ" and str(b.block_type).upper() in ("DRUM", "CHORD")]
+                       if str(b.block_type).upper() in ("DRUM", "CHORD")
+                       and (b.mode == "SEQ" or b.drum_voices is not None)]
         dependents = [b for b in self.project.blocks
                       if b.mode == "SEQ" and b not in authorities]
         for block in authorities:
@@ -826,18 +1165,26 @@ class MusicEngine:
             self.generate_block(block)
         self.apply_relations()
 
-    def regenerate(self, block: Block):
+    def regenerate(self, block: Block, motif_beat=None):
         """Regenerate one block after an edit and re-apply all relations."""
         parent = self.drum_parent_for(block)
+        targeted_voice = parent is not None and motif_beat is not None
+        if targeted_voice:
+            # An early humanized attack advances only its own motif. Passing
+            # that future beat to siblings could replace their last old-cycle
+            # notes with the next variant before those notes were played.
+            self.generate_block(block, motif_beat=motif_beat)
+            self._aggregate_drum_outputs(parent)
         if parent is not None:
             block = parent
-        if block.mode == "SEQ":
-            self.generate_block(block)
+        is_kit = str(block.block_type).upper() == "DRUM" and block.drum_voices is not None
+        if not targeted_voice and (block.mode == "SEQ" or is_kit):
+            self.generate_block(block, motif_beat=motif_beat)
         self.update_musical_context()
         # A changed Drum/Chord is an authority for every dependent SEQ block.
         # Rebuild those dependents so their pre-relation groove/harmony stage
         # sees the new authority, matching a full Generate operation.
-        if block.mode == "SEQ" and str(block.block_type).upper() in ("DRUM", "CHORD"):
+        if (block.mode == "SEQ" or is_kit) and str(block.block_type).upper() in ("DRUM", "CHORD"):
             dependents = [b for b in self.project.blocks
                           if b.mode == "SEQ" and str(b.block_type).upper() not in ("DRUM", "CHORD")]
             for dependent in dependents:
@@ -947,7 +1294,12 @@ class MusicEngine:
     @staticmethod
     def parameter_catalog(block: Block) -> dict[str, tuple[float, float, float]]:
         catalog = dict(COMMON_MOD_PARAMETERS)
+        if block.block_type in ("BASS", "MELODY"):
+            catalog["harmonic_strength"] = (.75, 0., 1.)
         catalog.update(GENERATOR_MOD_PARAMETERS.get(block.algorithm, {}))
+        if getattr(block, "drum_voices", None) is not None:
+            catalog.update({key: (value, 0., 1.) for key, value in CREATIVE_DEFAULTS.items()})
+            catalog.update({key: (default, 0., 1.) for key, default in (("kit_density", 1.), ("kit_swing", 0.), ("kit_humanize", 0.), ("kit_fill", 0.))})
         # Any numeric parameter already stored in a project is a real
         # destination too; use a conservative range around its value.
         for key, value in block.parameters.items():
@@ -961,7 +1313,7 @@ class MusicEngine:
             catalog[key] = (v, -span * 4.0, span * 4.0)
         return catalog
 
-    def set_parameter(self, block: Block, key: str, value: float) -> bool:
+    def set_parameter(self, block: Block, key: str, value: float, source=None) -> bool:
         """Write a catalog parameter, clamped to its range and keeping its type."""
         catalog = self.parameter_catalog(block)
         if key not in catalog:
@@ -970,13 +1322,17 @@ class MusicEngine:
         value = _clamp(float(value), lo, hi)
         current = block.parameters.get(key, default)
         if isinstance(current, bool):
-            block.parameters[key] = bool(value >= 0.5)
+            value = bool(value >= 0.5)
         elif key in FLOAT_MOD_KEYS:
-            block.parameters[key] = float(value)
+            value = float(value)
         elif isinstance(current, int):
-            block.parameters[key] = int(round(value))
+            value = int(round(value))
         else:
-            block.parameters[key] = float(value)
+            value = float(value)
+        if source is None:
+            self.parameter_influence.manual(block, key, value)
+        else:
+            self.parameter_influence.write(block, key, value, source)
         return True
 
     def apply_pending_parameter_modulations(self) -> list[Block]:
@@ -1000,9 +1356,10 @@ class MusicEngine:
         changed = set()
         for (block_id, key), value in pending.items():
             block = self.find_block(block_id)
-            if block is not None and self.set_parameter(block, key, value):
+            if block is not None and self.set_parameter(block, key, value, source="Parameter Modulation"):
                 changed.add(block.id)
-        changed_blocks = [b for b in self.project.blocks if b.id in changed and b.mode == "SEQ"]
+        changed_blocks = [b for b in self.project.blocks if b.id in changed and
+                          (b.mode == "SEQ" or getattr(b, "drum_voices", None) is not None)]
         for block in changed_blocks:
             self.generate_block(block)
         if changed_blocks:
@@ -1090,10 +1447,11 @@ class MusicEngine:
                 if "base" not in route:
                     route["base"] = float(block.parameters.get(key, default))
                 base = float(route["base"])
-                if self.set_parameter(block, key, base + (target - base) * amount):
+                if self.set_parameter(block, key, base + (target - base) * amount,
+                                      source="Macro: " + str(macro.get("name", "Macro"))):
                     touched.add(block.id)
         for block in self.project.blocks:
-            if block.id in touched and block.mode == "SEQ":
+            if block.id in touched and (block.mode == "SEQ" or getattr(block, "drum_voices", None) is not None):
                 self.generate_block(block)
         self.apply_relations()
 
@@ -1162,6 +1520,11 @@ class MusicEngine:
         return block.parameters.get(key, default)
 
     def _live_interval(self, block: Block, rng: random.Random) -> float:
+        if self.coordinated_drum(block) is not None:
+            return STEP_BEATS * 60.0 / max(1, self.project.tempo)
+        step = self.motif_step_beats(block)
+        if step is not None:
+            return step * 60.0 / max(1, self.project.tempo)
         # Continuous timing: a real-valued interval in seconds. No fixed
         # 16-step grid is used in LIVE mode.
         base = 60.0 / max(1, self.project.tempo)
@@ -1179,17 +1542,19 @@ class MusicEngine:
         humanize_factor = 1.0 + rng.uniform(-humanize, humanize) if humanize else 1.0
         rate_factor = 1.0 / rate
         offset_factor = max(0.05, 1.0 + offset)
+        drum = self.drum_parent_for(block)
+        kit_factor = live_timing_factor(drum, self._seed_for(block), max(0, event_index - 1)) if drum is not None else 1.0
         if block.algorithm == "Euclidean":
             density = _clamp(float(self._live_parameter(block, "pulses", 5)) / max(1, self.project.length), 0.05, 1.0)
             interval = max(0.08, max(minimum, 1.0 - density * 0.7))
-            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor
+            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
         if block.algorithm == "Probability":
             probability = _clamp(float(self._live_parameter(block, "probability", 0.5)), 0.01, 1.0)
             # Lower probability means more time between accepted events.
             interval = _clamp(rng.expovariate(probability), minimum, maximum)
-            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor
+            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
         interval = rng.uniform(minimum, maximum)
-        return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor
+        return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
 
     def _next_phase(self, state: dict, size: int) -> int:
         """Return the current step of a cyclic LIVE sequence and advance it."""
@@ -1219,23 +1584,49 @@ class MusicEngine:
             self.apply_relations(skip_destination=block.id)
         return None
 
-    def live_event(self, block: Block) -> Optional[dict[str, float]]:
+    def live_event(self, block: Block, beat: float | None = None) -> Optional[dict[str, float]]:
         rng = self._rng_for(block)
         state = self.live_state.setdefault(block.id, {"pitch": 0.0, "last": 0.0})
         state["events"] = int(state.get("events", 0)) + 1
+        kit_index = state["events"] - 1
+        kit_fill = self._kit_fill_at(block, kit_index)
         p = block.parameters
         alg = block.algorithm
         length = max(1, int(self.project.length))
         root, scale = self._root(block), self._scale(block)
+        motif_beat = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        variant = self.motif_variant(block, motif_beat)
+        motif = variant.motif if variant is not None else None
+        plan = self.kit_plan(block, motif_beat)
+        kit_source = None
 
-        if alg in CYCLIC_LIVE_ALGORITHMS:
+        if plan is not None or self._drum_window_processing_needed(block):
+            if plan is not None:
+                kit_index = max(0, int(math.floor(motif_beat / STEP_BEATS + 1e-8)))
+                self._kit_live_slots[block.id] = kit_index
+                self.source_positions[self.drum_parent_for(block).id] = kit_index % plan.length
+            elif motif is not None:
+                kit_index = max(0, int(math.floor(motif_beat / self.motif_step_beats(block, motif) + 1e-8)))
+            kit_source = self._kit_live_source(block, kit_index, plan, variant)
+            if not kit_source.rhythm[0]:
+                return self._live_rest(block)
+            pitch, velocity = kit_source.pitch[0], kit_source.velocity[0]
+        elif motif is not None:
+            # Motif onsets are a source, not a mask gated by an unrelated
+            # generator's early returns. Its own rests still publish zeros.
+            index = motif.index_at(motif_beat, self.motif_step_beats(block, motif))
+            if motif.rhythm and float(motif.rhythm[index % len(motif.rhythm)]) <= 0:
+                return self._live_rest(block)
+            pitch = float(motif.notes[index % len(motif.notes)]) if motif.notes else 0.0
+            velocity = self._motif_velocity(block, motif, index)
+        elif alg in CYCLIC_LIVE_ALGORITHMS:
             # Deterministic material is stepped through in order (step 0 first).
             seq = self._seq_material(block, length, rng)
             if not seq:
                 return self._live_rest(block)
             value = seq[self._next_phase(state, len(seq))]
             if self._zero_is_rest(block):
-                if not value:
+                if not value and not kit_fill:
                     return self._live_rest(block)
                 pitch = 0.0
             else:
@@ -1269,7 +1660,7 @@ class MusicEngine:
             state["phase"] = phase
             rotation = int(self._live_parameter(block, "euclidean_rotation", 0)) % max(1, steps)
             rotated_phase = (phase + rotation / float(max(1, steps))) % 1.0
-            if rotated_phase > pulses / float(steps):
+            if rotated_phase > pulses / float(steps) and not kit_fill:
                 return self._live_rest(block)
             pitch = 0.0
             velocity = 0.8
@@ -1282,7 +1673,7 @@ class MusicEngine:
             candidates = [d for d in range(count) if abs(d - current_degree) <= jump]
             if rng.random() < float(p.get("markov_leap", .12)):
                 candidates = list(range(count))
-            if rng.random() < float(p.get("markov_rest", 0.0)):
+            if rng.random() < float(p.get("markov_rest", 0.0)) and not kit_fill:
                 return self._live_rest(block)
             if rng.random() < _clamp(float(p.get("markov_stay", 0.0)), 0.0, 1.0):
                 next_degree = current_degree
@@ -1306,7 +1697,7 @@ class MusicEngine:
             state["pitch"] = pitch
             velocity = rng.uniform(0.45, 0.95)
         elif alg == "Probability":
-            if rng.random() > _clamp(float(p.get("probability", 0.5)), 0.0, 1.0):
+            if rng.random() > _clamp(float(p.get("probability", 0.5)), 0.0, 1.0) and not kit_fill:
                 return self._live_rest(block)
             spread = max(1, int(p.get("probability_pitch_range", 7)))
             pitch = float(int(p.get("probability_center", 0)) + rng.randint(-spread, spread))
@@ -1318,7 +1709,7 @@ class MusicEngine:
             # Pattern: step through the pattern in order; 0 is a rest, as in SEQ.
             values = self._pattern_values(block)
             value = values[self._next_phase(state, len(values))]
-            if not value or rng.random() > float(p.get("pattern_probability", 1.0)):
+            if (not value or rng.random() > float(p.get("pattern_probability", 1.0))) and not kit_fill:
                 return self._live_rest(block)
             pitch = float(value)
             velocity = rng.uniform(0.5, 0.9)
@@ -1327,7 +1718,7 @@ class MusicEngine:
         live_gate = _clamp(float(live_gate_override if live_gate_override is not None else p.get("live_gate", .65)), .03, 1.5)
         velocity_base_override = self._live_parameter(block, "velocity_base", None)
         velocity_accent_override = self._live_parameter(block, "velocity_accent", None)
-        if velocity_base_override is not None:
+        if velocity_base_override is not None and motif is None and plan is None:
             velocity_range = _clamp(float(p.get("velocity_range", .25)), 0.0, 1.0)
             # LIVE already has a natural per-event velocity.  Treat a
             # technique's velocity_base as a target around the normal .72
@@ -1337,15 +1728,18 @@ class MusicEngine:
             # peak.
             target = _clamp(float(velocity_base_override), 0.0, 1.0)
             velocity = _clamp(float(velocity) * .45 + target * .55, 0.0, 1.0)
-        if velocity_accent_override is not None:
+        if velocity_accent_override is not None and motif is None and plan is None:
             velocity = _clamp(float(velocity) + float(velocity_accent_override) * .35, 0.0, 1.0)
         representation = MusicalRepresentation(
             rhythm=[1.0], pitch=[float(pitch)], velocity=[float(velocity)],
             duration=[live_gate], density=[1.0], accent=[1.0 if velocity >= 0.85 else 0.0],
         )
-        self._apply_active_motif(block, representation)
-        self._apply_representation_mutators(block, representation, rng)
-        self._apply_processes(block, representation, rng)
+        if kit_source is not None:
+            representation = kit_source
+        else:
+            self._apply_active_motif(block, representation, beat=motif_beat, variant=variant)
+        if kit_source is None:
+            self._process_kit_material(block, representation, rng, plan, kit_index)
         self._apply_relation_context(block, representation)
         self.update_musical_context()
         self._apply_groove_to_representation(block, representation)
@@ -1376,6 +1770,9 @@ class MusicEngine:
         self._apply_role_profile(block, representation, rng)
         if block.block_type not in PERCUSSIVE_TYPES and representation.pitch:
             representation.pitch[0] = self._quantize_pitch(block, representation.pitch[0])
+        self._apply_kit_output(block, representation, kit_index)
+        if not self.pattern_step_allowed(block, kit_index):
+            return self._live_rest(block)
         block.outputs = representation.as_outputs()
         self._base_outputs[block.id] = representation.as_outputs()
         # LIVE blocks are not part of the initial generate() pass.  Re-apply
@@ -1386,7 +1783,7 @@ class MusicEngine:
             self.apply_relations()
         self.collect_parameter_modulations(block, 0)
         fill = self._fill_density_value(block)
-        if fill <= 0.0 or (fill < 1.0 and rng.random() >= fill):
+        if fill <= 0.0 or (kit_source is None and fill < 1.0 and rng.random() >= fill):
             return self._live_rest(block)
         # Emit the *post-relation* event.  It used to be built from the
         # representation before relations, so Follow/Copy/groove/chord anchor
@@ -1413,7 +1810,33 @@ class MusicEngine:
         }
         if block.block_type in ("CHORD", "PAD"):
             event["pitches"] = self._chord_pitches(block, root_pitch)
+        event = self.harmonize_event(block, event, motif_beat)
         return event
+
+    def harmonize_event(self, block, event, beat=None):
+        beat = self.clock.position_beats if beat is None else beat
+        self.update_harmonic_context(beat)
+        return self.harmonic_runtime.apply(block, event, beat)
+
+    def dialogue_event(self, block, event, beat=None):
+        """Final accepted event: turn-taking after probability and mute gates."""
+        beat = self.clock.position_beats if beat is None else beat
+        result = self.dialogue_runtime.apply(block, event, beat)
+        if result is not None and result.pop('dialogue_pitch_changed', False):
+            result['pitch'] = self._quantize_pitch(block, self._role_pitch(block, result['pitch']))
+            # A response contour must obey today's chord, not replay the call's
+            # old harmony or copy the caller's absolute octave.
+            result = self.harmonize_event(block, result, beat)
+        return result
+
+    def update_harmonic_context(self, beat=None):
+        beat = self.clock.position_beats if beat is None else beat
+        harmony = self.harmonic_runtime.at(beat)
+        if harmony is not None:
+            self.musical_context.values["harmonic_plan"] = harmony
+        else:
+            self.musical_context.values.pop("harmonic_plan", None)
+        return harmony
 
     def _chord_pitches(self, block: Block, root_pitch: float) -> list[float]:
         """Expand a harmonic role into a simultaneous diatonic voicing."""
@@ -1635,7 +2058,7 @@ class MusicEngine:
         """Return block-id cycles. Disabled relations do not participate."""
         graph = {}
         for r in self.project.relations:
-            if getattr(r, "enabled", True):
+            if getattr(r, "enabled", True) and r.algorithm != 'Dialogue':
                 graph.setdefault(int(r.source_block), set()).add(int(r.destination_block))
         cycles=[]
         def visit(start):
@@ -1671,7 +2094,7 @@ class MusicEngine:
         # idempotent and does not accumulate previous relation passes.
         self._apply_role_relations(skip_destination=skip_destination)
         for ridx, relation in enumerate(self.project.relations):
-            if not getattr(relation, "enabled", True):
+            if not getattr(relation, "enabled", True) or relation.algorithm == 'Dialogue':
                 continue
             source = self.find_block(relation.source_block)
             destination = self.find_block(relation.destination_block)
@@ -1688,7 +2111,7 @@ class MusicEngine:
             delay = max(0, int(getattr(relation, "delay", 0)))
             # A LIVE destination holds one event: read the source at its
             # current transport position instead of always at step 0.
-            base = self.source_positions.get(source.id, 0) if destination.mode == "LIVE" and source.mode != "LIVE" else 0
+            base = self.source_positions.get(source.id, 0) if destination.mode == "LIVE" and (source.mode != "LIVE" or coordinated(source)) else 0
             src = [src[(base + i - delay) % len(src)] for i in range(n)]
             probability = _clamp(float(getattr(relation, "probability", 1.0)), 0.0, 1.0)
             seed = self.project.seed + (int(getattr(relation, "id", 0)) or ridx + 1) * 104729

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Any
+import math
 
 @dataclass
 class Motif:
@@ -12,6 +13,21 @@ class Motif:
     rhythm: list[float] = field(default_factory=list)
     velocity: list[float] = field(default_factory=list)
     variations: dict[str, Any] = field(default_factory=dict)
+    step_beats: float = .25
+
+    @property
+    def steps(self):
+        return max(len(self.notes), len(self.rhythm), len(self.velocity), 1)
+
+    def step_duration(self, override=None):
+        try:
+            value = float(self.step_beats if override is None else override)
+        except (TypeError, ValueError):
+            value = .25
+        return max(.0625, min(16.0, value)) if math.isfinite(value) else .25
+
+    def index_at(self, beat, step_beats=None):
+        return int(math.floor(max(0.0, float(beat)) / self.step_duration(step_beats) + 1e-8)) % self.steps
 
 @dataclass
 class TensionPoint:

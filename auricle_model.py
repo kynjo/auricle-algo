@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from auricle_catalogs import DRUM_VOICE_DEFAULTS, PARTS, PERCUSSIVE_TYPES, ROLE_PROFILES, _clamp, apply_role_defaults
+from coordinated_kit import infer_role
 
 @dataclass
 class Process:
@@ -45,6 +46,11 @@ class DrumVoice:
     muted: bool = False
     is_drum_voice: bool = True
 
+    def __post_init__(self):
+        # Infer once when a voice is created/loaded; later renaming or MIDI
+        # note edits must not silently change its musical responsibility.
+        self.parameters.setdefault("kit_role", infer_role(self.midi_note, self.name))
+
 
 @dataclass
 class MusicalRepresentation:
@@ -71,7 +77,11 @@ class Block:
     midi_port: str = ""
     midi_note: int = 60
     parameters: dict[str, Any] = field(default_factory=dict)
-    mutators: list[Mutator] = field(default_factory=list)
+    # Defaults belong only to a new block. An explicitly supplied (or loaded)
+    # list must keep its exact order and may intentionally be empty.
+    mutators: list[Mutator] = field(default_factory=lambda: [
+        Mutator(name, 0.5, "pitch") for name in ("Transpose", "Scale", "Octave")
+    ])
     processes: list[Process] = field(default_factory=list)
     outputs: dict[str, list[float]] = field(default_factory=dict)
     # Optional per-block accent color. If empty, the GUI falls back to the
@@ -81,15 +91,6 @@ class Block:
     # None means a legacy/simple DRUM block that has not been upgraded to the
     # Drum Machine container yet. The GUI and project loader materialize voices.
     drum_voices: Optional[list[DrumVoice]] = None
-
-    def __post_init__(self):
-        # Every block starts with the three basic pitch-shaping stages.
-        # Existing custom mutators are preserved and duplicates are not added.
-        existing = {m.name for m in self.mutators}
-        for name in ("Transpose", "Scale", "Octave"):
-            if name not in existing:
-                self.mutators.append(Mutator(name, 0.5, "pitch"))
-
 
 def make_default_drum_voices(parent: Block) -> list[DrumVoice]:
     """Create the six editable voices of a new Drum Machine."""
@@ -104,6 +105,7 @@ def make_default_drum_voices(parent: Block) -> list[DrumVoice]:
             "timing_swing": 0.0, "timing_humanize": 0.0,
             "timing_offset": 0.0, "velocity_base": 0.72,
             "velocity_range": 0.25, "velocity_accent": 0.18,
+            "kit_role": "perc" if name == "PERC" else infer_role(note),
         }
         voice_params.update(parameters)
         voices.append(DrumVoice(
@@ -152,6 +154,7 @@ class Relation:
     probability: float = 1.0
     enabled: bool = True
     id: int = 0
+    parameters: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -168,6 +171,7 @@ class Project:
     performance: dict[str, dict[str, Any]] = field(default_factory=dict)
     motifs: dict[str, dict[str, Any]] = field(default_factory=dict)
     phrase_state: dict[str, Any] = field(default_factory=dict)
+    harmonic_plan: dict[str, Any] = field(default_factory=dict)
 
 
 def block_root(project: Any, block: Block) -> int:

@@ -488,13 +488,17 @@ class PerformanceRuntime:
             stage = resolve_phrase_stage(phrase, block.block_type, stage_index)
             self.start(block, stage.technique_id, amount=stage.amount * state.intensity, shape=stage.shape or phrase.stages[stage_index].shape or "in", beats=stage.beats, phrase_id=phrase.id)
 
-    def tick(self, running: bool = True):
-        now = time.monotonic()
-        dt = max(0.0, min(.1, now - self._last_time))
+    def tick(self, running: bool = True, beat_delta: float | None = None, now: float | None = None):
+        # The transport supplies its clock delta to every musical consumer.
+        # Standalone callers may still drive the runtime without a transport.
+        now = time.monotonic() if now is None else float(now)
+        dt = max(0.0, now - self._last_time)
         self._last_time = now
         if not running:
             return
-        beat_dt = dt * float(getattr(self.project, "tempo", 120)) / 60.0
+        beat_dt = max(0.0, float(beat_delta)) if beat_delta is not None else dt * float(getattr(self.project, "tempo", 120)) / 60.0
+        activated = set()
+        release_deltas = {}
         state=self.engine.director.phrase
         if state.running:
             phrase=phrase_with_duration(phrase_for(state.phrase_id), state.memory.get("total_beats"))
@@ -510,12 +514,21 @@ class PerformanceRuntime:
                         stage_index=i; break
                 if stage_index != state.stage_index:
                     self._activate_phrase_stage(self.project,state,phrase,stage_index)
+                    # A delayed tick may cross several stages. Enter the
+                    # current stage at its real position, not at elapsed zero.
+                    within_stage = max(0.0, elapsed - (cursor - max(.25, float(phrase.stages[stage_index].beats))))
+                    for block_id, active in self.active.items():
+                        if active.phrase_id == phrase.id:
+                            active.elapsed_beats = within_stage
+                            activated.add(block_id)
                 if elapsed >= phrase.total_beats:
+                    release_deltas[phrase.id] = max(0.0, elapsed - phrase.total_beats)
+                    state.position_beats = phrase.total_beats
                     self.stop_phrase(phrase.id)
         # Snapshot-based release is deliberately processed separately from
         # active techniques, so STOP cannot jump directly to the old values.
         for release_id, release in list(self.active_phrase_releases.items()):
-            release.elapsed_beats += beat_dt
+            release.elapsed_beats += release_deltas.get(release_id, beat_dt)
             progress = min(1.0, release.elapsed_beats / max(.5, release.beats))
             t = _shape(progress, "out")
             for block in list(self.project.blocks):
@@ -529,8 +542,8 @@ class PerformanceRuntime:
                     except (TypeError, ValueError):
                         current_f = target
                     value = current_f + (target - current_f) * t
-                    if not self.engine.set_parameter(block, key, value):
-                        block.parameters[key] = float(value)
+                    if not self.engine.set_parameter(block, key, value, source="Phrase release"):
+                        self.engine.parameter_influence.write(block, key, float(value), "Phrase release")
                 if block.mode == "SEQ" and progress < 1.0:
                     self.engine.regenerate(block)
             if progress >= 1.0:
@@ -551,7 +564,8 @@ class PerformanceRuntime:
             if preset is None:
                 self.stop(block.id)
                 continue
-            state.elapsed_beats += beat_dt
+            if block.id not in activated:
+                state.elapsed_beats += beat_dt
             progress = min(1.0, state.elapsed_beats / max(.25, state.beats))
             values = interpolate_preset(preset, progress, state.amount, state.shape)
             # Smooth stage boundary: blend from the outgoing parameter state
@@ -563,13 +577,14 @@ class PerformanceRuntime:
                         values[key]=state.crossfade_from[key] + (float(value)-state.crossfade_from[key])*xf
             state.current_values = {str(key): float(value) for key, value in values.items()}
             for key, value in values.items():
+                source = "Technique: " + str(state.preset_id)
                 if key == "gate":
-                    block.parameters[key] = max(.05, min(1.0, float(value)))
-                elif not self.engine.set_parameter(block, key, value):
+                    self.engine.parameter_influence.write(block, key, max(.05, min(1.0, float(value))), source)
+                elif not self.engine.set_parameter(block, key, value, source=source):
                     # Representation parameters such as velocity_base and
                     # velocity_accent are valid performance destinations even
                     # when an older project did not serialize them explicitly.
-                    block.parameters[key] = float(value)
+                    self.engine.parameter_influence.write(block, key, float(value), source)
             # LIVE reads parameters on the next event. SEQ needs regeneration
             # so a gesture changes the cached representation, but regenerating
             # at 5 ms transport resolution would waste CPU and can reshuffle a

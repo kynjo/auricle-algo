@@ -7,7 +7,7 @@ name = "auricle"
 dynamic = ["version"]
 description = "Algorithmic MIDI music generator built from independent generator blocks"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "PySide6>=6.8,<7",
     "mido>=1.3.3,<2",
@@ -16,16 +16,33 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-build = ["pyinstaller>=6.11,<7"]
+build = ["pyinstaller>=6.11,<7", "build>=1,<2"]
 
 [project.gui-scripts]
 auricle = "auricle_gui:main"
 
 [tool.setuptools]
-py-modules = ["auricle_core", "auricle_catalogs", "auricle_model", "auricle_engine", "auricle_relations", "auricle_persistence", "auricle_transport", "auricle_gui", "generators", "performance_presets", "help_content", "ui_themes", "version", "music_director", "motif_engine", "voice_leading", "relation_context", "transport_queue", "transport_worker"]
+packages = ["auricle_assets"]
+py-modules = [
+    "auricle_core", "auricle_catalogs", "auricle_model", "auricle_engine",
+    "auricle_drum", "auricle_relations", "auricle_persistence", "auricle_transport",
+    "auricle_gui", "auricle_resources", "coordinated_kit", "drum_editing",
+    "generators", "harmonic_plan", "harmonic_plan_ui", "help_content",
+    "instrument_dialogue", "instrument_dialogue_ui", "motif_development",
+    "motif_engine", "music_director", "musical_clock", "parameter_influence",
+    "parameter_influence_ui", "pattern_chance", "performance_presets",
+    "project_history", "project_history_ui", "relation_context", "transport_queue",
+    "transport_worker", "ui_themes", "version", "voice_leading",
+]
+
+[tool.setuptools.package-dir]
+auricle_assets = "assets"
+
+[tool.setuptools.package-data]
+auricle_assets = ["*.png", "*.ico", "*.icns"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools.dynamic]
-version = {attr = "version.APP_VERSION"}
+version = {attr = "version.PACKAGE_VERSION"}

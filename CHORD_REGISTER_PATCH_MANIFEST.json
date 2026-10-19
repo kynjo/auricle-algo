@@ -1,0 +1,48 @@
+{
+  "release": "v111: harmonic plan register fix",
+  "date": "2026-10-18",
+  "base_archive": "auricle_update.zip",
+  "changed_and_new_only": true,
+  "verification": {
+    "targeted_suite": "105 passed in 13.22s",
+    "MIDI": "SEQ/LIVE captured for 96 bars per CHORD/PAD; no physical MIDI device"
+  },
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 25122,
+      "sha256": "a36f8711b838f2b1c27c05cbe916698a25bfe8188353d9d913edece022b0e1a8",
+      "previous_sha256": "c05274c77675c4b3abb3af612ccd0c869edbe85c740846b0d0c548c4c014af52"
+    },
+    {
+      "path": "docs/CHORD_REGISTER_FIX_RU.md",
+      "bytes": 3189,
+      "sha256": "71218abfb4d6ade6b3269702377d30fc3c554da24fbcf907be1d2d7f2582cf38",
+      "previous_sha256": null
+    },
+    {
+      "path": "docs/HISTORY_HARMONY_RU.md",
+      "bytes": 13619,
+      "sha256": "928f7b4c3f806ebb99a58fec7fd8f66e36a589f48917eda43e399734513e5875",
+      "previous_sha256": "efa335926555c43f06635fb9c21452f90fe0991cb334467b118f1bd9449118e6"
+    },
+    {
+      "path": "harmonic_plan.py",
+      "bytes": 8462,
+      "sha256": "1e26145e93664f0a166a7cd0d9388859e7d44968f2ae39342b59a09f79f78b68",
+      "previous_sha256": "9f1f32b9f8e945245e5b5474c2a55bcc4653318a929ba921add706b9c231d62c"
+    },
+    {
+      "path": "tests/test_harmonic_register.py",
+      "bytes": 5945,
+      "sha256": "4f3107e6b3a7cb8c5aba62f0d074fbd259308a449a141965c897a6705e1f733d",
+      "previous_sha256": null
+    },
+    {
+      "path": "voice_leading.py",
+      "bytes": 3242,
+      "sha256": "2b3f347416d106c4b463f0ce427e4e98c7c66b71cd1f0fae5359b324caf43445",
+      "previous_sha256": "7a44d2b033e12bc32ee40c9ba3069bbbcbfc80ffc30d01a69a7bbe8964e2d467"
+    }
+  ]
+}

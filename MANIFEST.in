@@ -1,0 +1,13 @@
+include README.md RELEASE_NOTES.md CHANGELOG.md CODE_AUDIT_V111.md
+include Auricle.spec requirements*.txt *.sh *.bat .gitignore .gitattributes
+include create_demo_project.py
+recursive-include assets *.png *.ico *.icns *.py
+recursive-include docs *.md *.png
+recursive-include examples *.json
+recursive-include packaging *.py *.sh
+recursive-include tests *.py
+recursive-include .github *.yml *.md
+global-exclude *.py[cod] .DS_Store
+prune __pycache__
+prune .venv
+prune .venv-build

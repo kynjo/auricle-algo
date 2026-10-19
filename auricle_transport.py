@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+import math
 import threading
 import time
 import traceback
@@ -12,6 +13,8 @@ import mido
 
 from auricle_catalogs import PERCUSSIVE_TYPES, _clamp, _as_float
 from auricle_model import Block, midi_note_for
+from auricle_drum import timing_offset
+from coordinated_kit import STEP_BEATS, voice_role
 
 def get_midi_output_names():
     """Return available MIDI outputs without crashing when the backend is absent."""
@@ -30,9 +33,8 @@ def _transport_locked(method):
 class Transport:
     """Real-time transport.
 
-    SEQ blocks have their own repeating due time. LIVE blocks have independent
-    due times returned by the generator. There is deliberately no global
-    musical step driving MIDI generation.
+    Free generators keep their own SEQ/LIVE schedules. Bound motifs use a
+    shared beat clock, with independent musical step lengths per block.
     """
     LOG_FILE = "auricle_transport.log"
 
@@ -52,6 +54,32 @@ class Transport:
         self._master_step = 0
         self._ports_refreshing = False
         self._state_lock = threading.RLock()
+        self._motif_schedule = {}
+        self._kit_schedule = {}
+        self._drum_mod_slots = {}
+        self.drum_output_history = {}
+
+    def _advance_musical_clock(self, now):
+        engine = self.app.engine
+        delta = engine.clock.advance(now, self.app.project.tempo)
+        engine.performance.tick(self.running, beat_delta=delta, now=now)
+        engine.update_harmonic_context()
+
+    @_transport_locked
+    def set_tempo(self, value):
+        """Change tempo at the edit time without jumping the beat position."""
+        now = time.monotonic()
+        old = max(1.0, float(self.app.project.tempo))
+        if self.running:
+            self._advance_musical_clock(now)
+        self.app.project.tempo = max(1, int(value))
+        self.app.engine.clock.tempo = float(self.app.project.tempo)
+        ratio = old / self.app.project.tempo
+        if self.running:
+            for schedule in (self.next_due, self.grid_due, self.next_live):
+                for owner, due in schedule.items():
+                    schedule[owner] = now + (due - now) * ratio
+            self._master_due = now + (self._master_due - now) * ratio
 
     @property
     def seq_interval(self) -> float:
@@ -120,13 +148,39 @@ class Transport:
             return
         self.refresh_ports()
         self.app.engine.reset_live()
+        self.app.engine.harmonic_runtime.reset()
+        self.app.engine.dialogue_runtime.reset()
+        self.app.engine.motif_development.reset_playback()
+        self.app.engine.clock.position_beats = 0.0
         self.app.engine.generate()
         now = time.monotonic()
+        self.app.engine.clock.start(now, self.app.project.tempo)
+        self.app.engine.performance._last_time = now
+        if self.app.engine.director.phrase.running:
+            self.app.engine.director.phrase.stage_index = -1
+        self._motif_schedule.clear()
+        self._kit_schedule.clear()
+        self._drum_mod_slots.clear()
+        self.drum_output_history.clear()
         self.next_due.clear(); self.grid_due.clear(); self.step_count.clear(); self.seq_index.clear()
         self.next_live = {b.id: now for b in self._playable_blocks() if b.mode == "LIVE"}
         self._master_due = now
         self._master_step = 0
         for block in self._playable_blocks():
+            if self.app.engine.coordinated_drum(block) is not None:
+                self._kit_schedule[block.id] = {
+                    "slot": 0, "due": self._motif_due_beat(block, 0, STEP_BEATS), "mode": None,
+                }
+            motif = self.app.engine.active_motif(block)
+            if motif is not None:
+                step = self.app.engine.motif_step_beats(block, motif)
+                # The worker's first tick arrives after PLAY, not at exactly
+                # beat zero. Preserve the opening slot instead of treating
+                # every starting block as a late joiner.
+                self._motif_schedule[block.id] = {
+                    "key": (motif.id, step), "slot": 0,
+                    "due": self._motif_due_beat(block, 0, step), "mode": None,
+                }
             if block.mode == "SEQ":
                 self._anchor_block(block, now)
         self.running = True
@@ -134,6 +188,10 @@ class Transport:
 
     @_transport_locked
     def stop(self):
+        now = time.monotonic()
+        if self.running:
+            self._advance_musical_clock(now)
+        self.app.engine.clock.stop(now)
         self.running = False
         self.all_notes_off()
         self.next_due.clear()
@@ -141,6 +199,9 @@ class Transport:
         self.seq_index.clear()
         self.grid_due.clear()
         self.step_count.clear()
+        self._motif_schedule.clear()
+        self._kit_schedule.clear()
+        self._drum_mod_slots.clear()
         self.app.set_message("STOP")
 
     @_transport_locked
@@ -220,6 +281,11 @@ class Transport:
 
     def _block_seq_interval(self, block: Block) -> float:
         """Return this block's STRUCTURE/TIMING rate-adjusted SEQ interval."""
+        if self.app.engine.coordinated_drum(block) is not None:
+            return STEP_BEATS * 60.0 / max(1, self.app.project.tempo)
+        step = self.app.engine.motif_step_beats(block)
+        if step is not None:
+            return step * 60.0 / max(1, self.app.project.tempo)
         rate = _clamp(float(block.parameters.get("timing_rate", 1.0)), 0.25, 4.0)
         return self.seq_interval / rate
 
@@ -266,6 +332,10 @@ class Transport:
         return ""
 
     def _send_event(self, block: Block, event: dict[str, float], port: Any, interval: float):
+        drum = self.app.engine.coordinated_drum(block) if getattr(block, "parent_id", None) is not None else None
+        if drum is not None and voice_role(block) in ("closed_hat", "open_hat"):
+            hats = {v.id for v in drum.drum_voices if voice_role(v) in ("closed_hat", "open_hat")}
+            self._release_notes(lambda _due, _port, _note, _channel, owner: owner in hats)
         # CHORD events carry ``pitches`` and are emitted as simultaneous MIDI
         # note-ons. Non-chord events retain the original scalar path.
         pitches = event.get("pitches")
@@ -275,6 +345,23 @@ class Transport:
             note_event = dict(event)
             note_event["pitch"] = float(pitch)
             self._send_note(block, note_event, port, interval)
+
+    def _dispatch_event(self, block, event, port, interval):
+        """One accepted-event path for SEQ, LIVE, motifs and Drum Voices."""
+        engine = self.app.engine
+        parent = engine.drum_parent_for(block)
+        if block.muted or (parent is not None and parent.muted):
+            return None
+        event = engine.dialogue_event(block, event)
+        if event is None:
+            return None
+        try:
+            self.app.record_generated_event(block, event)
+        except Exception:
+            pass
+        if port is not None:
+            self._send_event(block, event, port, interval)
+        return event
 
     def _send_note(self, block: Block, event: dict[str, float], port: Any, interval: float):
         note = midi_note_for(self.app.project, block, event.get("pitch", 0.0))
@@ -321,6 +408,10 @@ class Transport:
             port = reopened
 
         duration = self._note_duration(block, interval, event)
+        if "harmony_remaining_beats" in event:
+            duration = min(duration, max(.005, float(event["harmony_remaining_beats"]) * 60.0 / max(1, self.app.project.tempo)))
+        if "dialogue_remaining_beats" in event:
+            duration = min(duration, max(.005, float(event["dialogue_remaining_beats"]) * 60.0 / max(1, self.app.project.tempo)))
         self.active_notes.append((time.monotonic() + duration, port, note, channel, block.id))
 
     def _release_due(self, now: float):
@@ -379,10 +470,14 @@ class Transport:
         humanize jitters this step only (it never feeds back into the grid)."""
         swing = _clamp(_as_float(block.parameters.get("timing_swing", 0.0), 0.0), 0.0, 0.5)
         humanize = _clamp(_as_float(block.parameters.get("timing_humanize", 0.0), 0.0), 0.0, 0.25)
-        when = grid + (swing * interval if step % 2 else 0.0)
-        if humanize:
-            when += self.app.engine._rng_for(block).uniform(-humanize, humanize) * interval
-        return when
+        if block.mode == "LIVE" and self.app.engine.coordinated_drum(block) is not None:
+            swing = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_swing", swing), swing), 0.0, .5)
+            humanize = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_humanize", humanize), humanize), 0.0, .25)
+        jitter = self.app.engine._rng_for(block).uniform(-humanize, humanize) if humanize else 0.0
+        drum = self.app.engine.drum_parent_for(block)
+        if drum is not None:
+            return grid + timing_offset(drum, self.app.engine._seed_for(block), step, swing, jitter) * interval
+        return grid + ((swing if step % 2 else 0.0) + jitter) * interval
 
     def _anchor_block(self, block: Block, now: float):
         """Place a starting or joining SEQ block on the shared 16th grid."""
@@ -434,13 +529,13 @@ class Transport:
         for destination in live:
             candidates = []
             built_in = self.app.engine.role_relation_source(destination)
-            if built_in is not None and built_in.mode == "LIVE":
+            if built_in is not None:
                 if str(built_in.block_type).upper() == "DRUM" and getattr(built_in, "drum_voices", None):
                     candidates.extend(voice.id for voice in built_in.drum_voices if voice.mode == "LIVE")
-                else:
+                elif built_in.mode == "LIVE":
                     candidates.append(built_in.id)
             for relation in self.app.project.relations:
-                if not getattr(relation, "enabled", True) or relation.destination_block != destination.id:
+                if not getattr(relation, "enabled", True) or relation.algorithm == 'Dialogue' or relation.destination_block != destination.id:
                     continue
                 source_parent = next((item for item in self.app.project.blocks
                                       if item.id == relation.source_block), None)
@@ -475,7 +570,7 @@ class Transport:
             visit(block.id)
         return seq + ordered
 
-    def _seq_event(self, block: Block, now: float, port: Any):
+    def _seq_event(self, block: Block, now: float, port: Any, absolute_slot=None):
         # Mute is an output gate. Keep the sequencer clock advancing, but
         # never allow direct calls to this low-level sender to bypass mute.
         # This protects both the transport loop and tests/tools that invoke
@@ -492,12 +587,15 @@ class Transport:
             parent = engine.drum_parent_for(block)
             if parent is not None:
                 positions[parent.id] = i
-        if block.muted:
+        parent = engine.drum_parent_for(block)
+        if block.muted or (parent is not None and parent.muted):
             # The step index advanced above, so unmute resumes on the current
             # phase (it used to freeze the pattern position while muted).
             engine.collect_parameter_modulations(block, i)
             return
-        if rhythm[i] > 0 and port is not None:
+        event = None
+        slot = self.step_count.get(block.id, i) if absolute_slot is None else absolute_slot
+        if rhythm[i] > 0 and engine.pattern_step_allowed(block, slot):
             probability = engine.event_probability(block)
             if probability >= 1.0 or engine._rng_for(block).random() <= probability:
                 pitch = block.outputs.get("pitch", [])
@@ -513,12 +611,110 @@ class Transport:
                 # Processes may shape the duration stream; honour it in SEQ too.
                 if i < len(duration) and duration[i] > 0:
                     event["duration"] = duration[i]
-                try:
-                    self.app.record_generated_event(block, event)
-                except Exception:
-                    pass
-                self._send_event(block, event, port, self._block_seq_interval(block))
+                event = engine.harmonize_event(block, event)
+                event = self._dispatch_event(block, event, port, self._block_seq_interval(block))
         engine.collect_parameter_modulations(block, i)
+        return event
+
+    def _observe_kit_output(self, block, slot, event):
+        """Bounded transport history: missing slot != a generated rest."""
+        history = self.drum_output_history.setdefault(block.id, {})
+        history[int(slot)] = max(0., min(1., float(event.get("velocity", .8)))) if event else 0.
+        if len(history) > 384:
+            for old in sorted(history)[:-384]:
+                del history[old]
+
+    def _motif_due_beat(self, block, slot, step):
+        offset = _clamp(_as_float(block.parameters.get("timing_offset", 0.0), 0.0), -.5, .5)
+        return self._swung_time(block, slot * step, slot, step) + offset * step
+
+    def _tick_kit_voice(self, block, now, port):
+        """One shared sixteenth grid, including rests and mode changes."""
+        engine = self.app.engine
+        beat = engine.clock.position_beats
+        schedule = self._kit_schedule.get(block.id)
+        if schedule is None:
+            slot = max(0, int(math.ceil(beat / STEP_BEATS - 1e-8)))
+            schedule = {"slot": slot, "due": self._motif_due_beat(block, slot, STEP_BEATS), "mode": None}
+            self._kit_schedule[block.id] = schedule
+        slot = schedule["slot"]
+        if beat >= (slot + 1) * STEP_BEATS - 1e-8:
+            slot = max(slot, int(math.floor(beat / STEP_BEATS + 1e-8)))
+            schedule["slot"] = slot
+            schedule["due"] = self._motif_due_beat(block, slot, STEP_BEATS)
+        if beat + 1e-8 < schedule["due"]:
+            return
+        scheduled_beat = slot * STEP_BEATS
+        plan = engine.kit_plan(block, scheduled_beat)
+        variant = engine.motif_variant(block, scheduled_beat)
+        token = variant.token if variant is not None else None
+        if block.mode == "SEQ" and (schedule["mode"] != "SEQ" or
+                engine._seq_kit_tokens.get(block.id) != plan.token or
+                engine._seq_motif_tokens.get(block.id) != token):
+            engine.regenerate(block, motif_beat=scheduled_beat)
+        schedule.update(mode=block.mode, slot=slot + 1,
+                        due=self._motif_due_beat(block, slot + 1, STEP_BEATS))
+        if block.mode == "SEQ":
+            self.seq_index[block.id] = slot % plan.length
+            accepted_event = self._seq_event(block, now, port, absolute_slot=slot)
+        else:
+            accepted_event = None
+            event = engine.live_event(block, beat=scheduled_beat)
+            if event is not None:
+                probability = engine.event_probability(block)
+                if probability >= 1.0 or engine._rng_for(block).random() <= probability:
+                    accepted_event = self._dispatch_event(block, event, port, self._block_seq_interval(block))
+        self._observe_kit_output(block, slot, accepted_event)
+        parent = engine.drum_parent_for(block)
+        engine._aggregate_drum_outputs(parent)
+        engine.apply_relations()
+
+    def _tick_motif(self, block, motif, now, port):
+        """Schedule SEQ/LIVE motif slots on the same absolute beat clock.
+
+        Rests and muted events consume slots too. Late ticks skip old slots
+        instead of playing a burst, and parameter regeneration owns no phase.
+        """
+        engine = self.app.engine
+        beat = engine.clock.position_beats
+        step = engine.motif_step_beats(block, motif)
+        key = (motif.id, step)
+        schedule = self._motif_schedule.get(block.id)
+        if schedule is None or schedule["key"] != key:
+            slot = max(0, int(math.ceil(beat / step - 1e-8)))
+            schedule = {"key": key, "slot": slot, "due": self._motif_due_beat(block, slot, step), "mode": None}
+            self._motif_schedule[block.id] = schedule
+        slot = schedule["slot"]
+        if beat >= (slot + 1) * step - 1e-8:
+            slot = max(slot, int(math.floor(beat / step + 1e-8)))
+            schedule["slot"] = slot
+            schedule["due"] = self._motif_due_beat(block, slot, step)
+        if beat + 1e-8 < schedule["due"]:
+            return
+        # Resolve at the scheduled slot, including early humanized onsets.
+        # SEQ must rebuild on a new variant just as LIVE reads the new material.
+        variant = engine.motif_variant(block, beat=slot * step)
+        if block.mode == "SEQ" and (schedule["mode"] != "SEQ" or
+                engine._seq_motifs.get(block.id) is not motif or
+                engine._seq_motif_tokens.get(block.id) != variant.token):
+            engine.regenerate(block, motif_beat=slot * step)
+        schedule["mode"] = block.mode
+        schedule["slot"] = slot + 1
+        schedule["due"] = self._motif_due_beat(block, slot + 1, step)
+        interval = step * 60.0 / max(1, self.app.project.tempo)
+        if block.mode == "SEQ":
+            self.seq_index[block.id] = slot % motif.steps
+            self._seq_event(block, now, port)
+        else:
+            event = engine.live_event(block, beat=slot * step)
+            if event is not None:
+                probability = engine.event_probability(block)
+                if probability >= 1.0 or engine._rng_for(block).random() <= probability:
+                    self._dispatch_event(block, event, port, interval)
+        parent = engine.drum_parent_for(block)
+        if parent is not None:
+            engine._aggregate_drum_outputs(parent)
+            engine.apply_relations()
 
     @_transport_locked
     def tick(self):
@@ -526,18 +722,14 @@ class Transport:
             return
         now = time.monotonic()
         engine = self.app.engine
-        if hasattr(engine, "performance"):
-            engine.performance.tick(True)
+        self._advance_musical_clock(now)
         # Apply only values queued during previous ticks. Any modulation
         # generated below is therefore guaranteed at least one tick late.
         engine.apply_pending_parameter_modulations()
         self._release_due(now)
         interval = self.seq_interval
-        guard = 0
-        while self._master_due <= now and guard < 4096:
-            self._master_due += interval
-            self._master_step += 1
-            guard += 1
+        self._master_step = int(math.floor(engine.clock.position_beats * 4 + 1e-8)) + 1
+        self._master_due = now + engine.clock.seconds_for_beats(self._master_step / 4 - engine.clock.position_beats)
 
         # Process each block independently. A single bad block/port must not
         # terminate the entire musical engine.
@@ -549,11 +741,31 @@ class Transport:
                 parent = engine.drum_parent_for(block)
                 muted = bool(block.muted or (parent is not None and parent.muted))
                 port_name = self._resolved_port_name(block)
-                if muted:
+                if muted or not engine.dialogue_runtime.can_play(block, engine.clock.position_beats):
                     self._release_block_notes(block.id)
                 port = None if block.muted else (self.outputs.get(port_name) if port_name else None)
                 if muted:
                     port = None
+                if engine.coordinated_drum(block) is not None:
+                    self.grid_due.pop(block.id, None)
+                    self._motif_schedule.pop(block.id, None)
+                    self._tick_kit_voice(block, now, port)
+                    continue
+                if self._kit_schedule.pop(block.id, None) is not None:
+                    if block.mode == "SEQ":
+                        engine.regenerate(block)
+                    else:
+                        self.next_live[block.id] = now
+                motif = engine.active_motif(block)
+                if motif is not None:
+                    self.grid_due.pop(block.id, None)
+                    self._tick_motif(block, motif, now, port)
+                    continue
+                if self._motif_schedule.pop(block.id, None) is not None:
+                    if block.mode == "SEQ":
+                        engine.regenerate(block)
+                    else:
+                        self.next_live[block.id] = now
                 if block.mode == "SEQ":
                     block_interval = self._block_seq_interval(block)
                     if block.id not in self.grid_due:
@@ -580,14 +792,7 @@ class Transport:
                             accepted = probability >= 1.0 or engine._rng_for(block).random() <= probability
                             live_interval = float(event.get("interval", 0.25))
                             if accepted:
-                                # Transport-side generated-event history for the LIVE
-                                # piano roll; independent of MIDI monitor/port state.
-                                try:
-                                    self.app.record_generated_event(block, event)
-                                except Exception:
-                                    pass
-                                if port is not None:
-                                    self._send_event(block, event, port, live_interval)
+                                self._dispatch_event(block, event, port, live_interval)
                         else:
                             live_interval = engine._live_interval(block, engine._rng_for(block))
                         parent = engine.drum_parent_for(block)
@@ -607,3 +812,16 @@ class Transport:
                         self.next_due[block.id] = now + interval
                 else:
                     self.next_live[block.id] = now + 0.25
+
+        # A kit container is not a playable voice. Sample its modulation tap
+        # once per shared grid slot, after all children have updated the bus.
+        # Pending values are still applied only on the following tick.
+        slot = max(0, int(math.floor(engine.clock.position_beats / STEP_BEATS + 1e-8)))
+        for drum in self.app.project.blocks:
+            if not getattr(drum, "drum_voices", None) or self._drum_mod_slots.get(drum.id) == slot:
+                continue
+            self._drum_mod_slots[drum.id] = slot
+            try:
+                engine.collect_parameter_modulations(drum, engine.source_positions.get(drum.id, slot))
+            except Exception as exc:
+                self._log_error(f"transport kit modulation={drum.id}", exc)

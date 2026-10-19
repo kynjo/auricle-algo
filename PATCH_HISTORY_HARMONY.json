@@ -1,0 +1,129 @@
+{
+  "release": "v111: Undo/Redo, parameter influences, harmonic plan",
+  "date": "2026-10-18",
+  "base_archive": "auricle_algorithmic_midi_v111_workflow_patch.zip",
+  "base_alternative_filename": "auricle_patch.zip",
+  "changed_and_new_only": true,
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 24479,
+      "sha256": "c05274c77675c4b3abb3af612ccd0c869edbe85c740846b0d0c548c4c014af52",
+      "previous_sha256": "e61e5b949074094e5ff365fdaaa312b9e015d2eea52cb6406204dcfaa0b1d8d8"
+    },
+    {
+      "path": "README.md",
+      "bytes": 8690,
+      "sha256": "ce65034aec5e3801564442602d446ea8f02d4c5a359ec633370fd0861467039f",
+      "previous_sha256": "d50572ef9ff94b321473cf2544041e7d4381893bca3c42fef4d557eceee3a111"
+    },
+    {
+      "path": "auricle_catalogs.py",
+      "bytes": 9804,
+      "sha256": "c68f0c25a8aae2c706054cf03610dec1815d09b68f41f48f4db030ba357d6c8f",
+      "previous_sha256": "92e3d034575bc371da73980d0f6dbf3619c1d1964abfb5d487b8f137a8224d28"
+    },
+    {
+      "path": "auricle_engine.py",
+      "bytes": 119724,
+      "sha256": "586d03fb48b4df4fab3a5f67003c2d0b2b2022e07268435037e72da4bc8a9569",
+      "previous_sha256": "27e82bfc866051832734ac28650c60f385150f35b27e170d526f0a4c09c283e8"
+    },
+    {
+      "path": "auricle_gui.py",
+      "bytes": 320536,
+      "sha256": "fb01ab4f28b040feff05489d6497422a57e9df0b0a46fc5b2e1401874c35a8d7",
+      "previous_sha256": "c404d39a1ba90d33d12579995b924c70f6cec4db1a14f63cbb6b0f841c2ef50e"
+    },
+    {
+      "path": "auricle_model.py",
+      "bytes": 7270,
+      "sha256": "df7611e88b1255003444465eb95fce47504b386d5861ea43001a2f9f8bd39d97",
+      "previous_sha256": "d5110990e12d477e43f076d4d6d6ddd885f042693418e9821ff37d482d2b8827"
+    },
+    {
+      "path": "auricle_persistence.py",
+      "bytes": 5713,
+      "sha256": "1630ae3bb2a09ff935a72948f2f5cab5330489ed0ab6e23c44e5a5611a18d7f9",
+      "previous_sha256": "7b25dd370cadcf182934e4483e2909972891531f5901e1064ac1f363f12d55d2"
+    },
+    {
+      "path": "auricle_transport.py",
+      "bytes": 39873,
+      "sha256": "11dc220776b64077b8bf320f7690a0e0d4892125baea80bdf33488015b18208e",
+      "previous_sha256": "4a0284f000ca2bf45e6d0352a35024b8e6572015000d5f9c5f8358a29d4b25b4"
+    },
+    {
+      "path": "docs/HISTORY_HARMONY_RU.md",
+      "bytes": 12620,
+      "sha256": "efa335926555c43f06635fb9c21452f90fe0991cb334467b118f1bd9449118e6",
+      "previous_sha256": null
+    },
+    {
+      "path": "examples/harmony_plan_demo.json",
+      "bytes": 15118,
+      "sha256": "1f1cb3bd49d51c0977e34c4167e5a90f6e0698e64a00deba63af80d1b07e01c3",
+      "previous_sha256": null
+    },
+    {
+      "path": "harmonic_plan.py",
+      "bytes": 7639,
+      "sha256": "9f1f32b9f8e945245e5b5474c2a55bcc4653318a929ba921add706b9c231d62c",
+      "previous_sha256": null
+    },
+    {
+      "path": "harmonic_plan_ui.py",
+      "bytes": 9190,
+      "sha256": "ce11adc61bbf9ea8ab55be2570120bb426590ded14a1a952a68c71fee3c8ff74",
+      "previous_sha256": null
+    },
+    {
+      "path": "parameter_influence.py",
+      "bytes": 2439,
+      "sha256": "72e1436d5fd9ee1596c81a6c4352e583cb203467f9640505e6beda965087776b",
+      "previous_sha256": null
+    },
+    {
+      "path": "parameter_influence_ui.py",
+      "bytes": 4582,
+      "sha256": "23c1427d66a1ad29da1f5eaa0e8aac651e38d333a7e9f2de6b86fdc8725e4118",
+      "previous_sha256": null
+    },
+    {
+      "path": "performance_presets.py",
+      "bytes": 39285,
+      "sha256": "502e9b9962b75d29566dd6485bf88edef4e64da3ba789b42499b6aeea1fa1987",
+      "previous_sha256": "fe84a008e566deb6324fa0371c6b117465fb262c0a8f929bd6027b833e12df93"
+    },
+    {
+      "path": "project_history.py",
+      "bytes": 6588,
+      "sha256": "4e195c068cae569e76fbea06ad918d8df9cd3df561c60e8ca3bbd013976c6a0a",
+      "previous_sha256": null
+    },
+    {
+      "path": "project_history_ui.py",
+      "bytes": 9808,
+      "sha256": "995443fff523a4c47ca7f2255b99c70ada276c7ee5ec42308f93e82e5e9a2303",
+      "previous_sha256": null
+    },
+    {
+      "path": "tests/test_history_influence_harmony.py",
+      "bytes": 17471,
+      "sha256": "b1324c65425aeaadcdef8bc1b10baf722ff283d5477f1e1bde8a6c109dec6a80",
+      "previous_sha256": null
+    },
+    {
+      "path": "voice_leading.py",
+      "bytes": 2859,
+      "sha256": "7a44d2b033e12bc32ee40c9ba3069bbbcbfc80ffc30d01a69a7bbe8964e2d467",
+      "previous_sha256": "8f026ae8cb1bf59077ecf1d7cd1eb798de91b3105606ab6e60063d02d73a15ae"
+    }
+  ],
+  "verification": {
+    "full_suite": "780 passed in 91.70s",
+    "focused_history_harmony_phrase": "61 passed",
+    "UI": "Qt offscreen; 820x700 and 1280x900; influence card and chord editor inspected",
+    "MIDI": "SEQ/LIVE events captured without physical devices"
+  }
+}

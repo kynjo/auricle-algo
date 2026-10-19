@@ -22,6 +22,27 @@ class VoiceLeading:
     def reset(self):
         self.previous.clear()
 
+    @staticmethod
+    def resolve_chord(notes, previous=None, *, register=None):
+        """Choose a register without altering any chord pitch class/interval.
+
+        No leap clamp: clamping individual voices can create non-chord tones.
+        An explicit inversion is preserved; the whole voicing moves by octaves.
+        When supplied, the fixed register takes priority over proximity to the
+        previous chord, which otherwise lets repeated progressions drift. If
+        the voicing is too wide, minimize its largest register overhang instead
+        of clipping or dropping chord tones.
+        """
+        notes = sorted(int(round(note)) for note in notes)
+        candidates = [[note + 12*octave for note in notes] for octave in range(-11, 12)]
+        candidates = [chord for chord in candidates if min(chord) >= 0 and max(chord) <= 127]
+        if not candidates: return notes
+        reference = sorted(previous or notes)
+        return min(candidates, key=lambda chord: (
+            max(0, register[0]-chord[0], chord[-1]-register[1]) if register else 0,
+            sum(abs(note-reference[min(i, len(reference)-1)]) for i, note in enumerate(chord)),
+            sum(abs(a-b) for a,b in zip(chord, notes))))
+
     def resolve_pitch(self, voice: str, target: float) -> float:
         """Resolve one note of a voice.
 

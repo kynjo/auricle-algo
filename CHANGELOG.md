@@ -1,3 +1,188 @@
+## v111 — GitHub and build preparation
+
+- Include the complete current asset set in source, wheel and native builds.
+- Preserve the supplied logo colours across themes; use native ICO / ICNS icons.
+- Include all current runtime modules in the Python package and resolve artwork independently of the working directory.
+- Add the macOS bundle, versioned native archives, CI, startup smoke checks, release notes and SHA-256 sums.
+- Add a current project overview, build/publishing guides and the supplied screenshot.
+- Remove obsolete patch installation requirements from the current README; keep historical guides for reference.
+
+## v111 — Instrument dialogue (2026-10-19)
+
+- Add Dialogue as an inline Relations operation with call/response bar lengths,
+  meter, pauses, separation, cycle probability and Own phrase/Echo/Contrast.
+- Capture accepted call events after mute/probability gates; shape the reply's
+  contour and accents without copying the caller's absolute register or old
+  harmony. Keep the destination's rhythm, CHORD/PAD voicings and Drum MIDI notes.
+- Use one dispatch path for SEQ, LIVE, motifs and Drum Voices, with bounded
+  per-cycle memory and releases at turn boundaries. Keep generator phase.
+- Display a colored timeline and current turn in Relations and Perform; retain
+  parameter editing by wheel/buttons, project persistence and document history.
+- Bypass missing/self/conflicting Dialogue pairs with a visible explanation;
+  preserve ordinary Relations and built-in role routes.
+- Add behavioral/MIDI/Qt checks, a six-block demo and a Russian guide.
+
+## v111 — Harmonic plan register fix (2026-10-18)
+
+- Keep CHORD/PAD voicings inside the block's Base Note + Role Center/Width
+  register before optimizing movement to the previous chord. Repeated plans
+  no longer climb or descend through octaves toward the MIDI limits.
+- Apply register edits on the next event, including within a held chord.
+  Preserve complete voicings, inversions and chord tones; wide voicings use
+  the closest fitting octave instead of clipping individual notes.
+- Add long-loop regression tests, captured SEQ/LIVE MIDI, register edits and
+  MIDI-boundary checks. See docs/CHORD_REGISTER_FIX_RU.md for installation.
+
+## v111 — History, parameter influences and harmonic plan (2026-10-18)
+
+- Add bounded document Undo/Redo, gesture grouping and saved-state tracking;
+  restore graph edits and Drum Voices without recording automated parameter
+  motion or note buffers. Keep transport position while ending active gestures.
+- Add atomic per-session crash recovery without overwriting the saved project.
+- Track actual macro, technique and Parameter Modulation writes; expose a live
+  read-only influence card from parameter values and the Edit menu.
+- Add a compact Perform harmonic plan and an inline chord editor with presets,
+  meter, bar durations and loop/hold. Resolve CHORD/PAD voicings, bass roots and
+  melody anchors after stream processing in both SEQ and LIVE; expose context.
+- Keep explicit chord pitch classes and restrict long notes to chord boundaries.
+- Preserve phrase targets as settings. Guard queued card edits across restores.
+- Fix overlapping transport controls at narrow widths and avoid globally
+  reapplying an unchanged Qt theme when another window is created.
+- Add behavior/MIDI/Qt tests, an all-role demo and a Russian installation guide.
+
+## v111 — Kit workflow: output, chances and sound copying (2026-10-18)
+
+- Add a Plan/Output view with bounded per-voice accepted-event history, velocity
+  bars and distinct rests/unvisited slots. SEQ generation monitoring also works
+  without an attached MIDI output. Replay clears history; STOP retains it.
+- Add persistent per-step Pattern chances as deterministic per-pass output
+  gates in SEQ/LIVE. Provide a compact Step/Chance editor and All 100% reset.
+- Add detached Copy/Paste sound settings for Drum Voices, preserving identity,
+  role, mode, mute and MIDI routing; add one-paste undo per voice. Keep transport
+  phase, clear old generator memory and stop the target's active technique.
+- Add MIDI/behavioral/Qt tests, a workflow demo and a Russian installation guide.
+
+## v111 — Drum Kit meters, variation and processing (2026-10-18)
+
+- Add seven meter presets, group-aware bar plans and a variable-length playhead.
+- Add Complexity, Syncopation, Toms, Variation and a persistent New variant;
+  toms can play throughout the bar even from a silent source pattern.
+- Apply parent DRUM mutations/processes after each voice chain. Process whole
+  LIVE windows so time-based transforms retain phase and history within a cycle.
+- Keep beat is optional; retain explicit dynamics gates and hat/fill exclusion.
+  Seed audible hits created by rhythm processes, preserve density/accent results
+  between voice and kit stages, and make zero-duration timing mutations silent.
+- Sample parent Parameter Modulation once per grid slot; retain fractional kit
+  values and refresh SEQ children even when their parent is labelled LIVE.
+- Add behavioral/Qt tests, a mixed-mode 7/8 demo and a Russian patch guide.
+
+## v111 — Stage 3 groove / Kit Plan fix (2026-10-18)
+
+- Infer missing voice roles from recognizable instrument names before GM notes;
+  custom hardware note maps no longer collapse the whole kit into Perc. Keep
+  explicit roles; add Auto roles repair and a missing-foundation hint.
+- Preserve the snare backbeat with clap as an optional layer, begin fills on
+  the existing backbeat and retain the role's timbre across each bar.
+- Protect groove anchors from rhythm mutations/processes while retaining
+  explicit density/probability controls, including a hard zero-density gate.
+- Add a numbered 16-step ruler and a visible rest-independent playhead, with
+  separate beat boundaries and optional-slot outlines. Verify all 16 positions
+  on rendered Qt widgets and both modes on non-GM MIDI note maps.
+
+## v111 — Stage 3: coordinated Drum Kit (2026-10-17)
+
+- Added a deterministic shared kit planner with persistent voice roles,
+  Straight / Half-time / Broken styles, 1–8 bars and one fill lead per tail slot.
+- SEQ/LIVE voices share a sixteenth-note grid across mode switches, edits and
+  tempo changes. Motif development continues; final masks preserve hat/fill
+  exclusivity after rhythm processing. Free voices retain independent timing.
+- Added hat Note Off ownership handling, channel-override coverage and correct
+  LIVE source positioning for coordinated Drum → Bass / explicit relations.
+- Added pinned coordination controls, role selectors, current-bar plan lanes
+  and a transport playhead without rebuilding the panel during knob drags.
+- Added behavioral/Qt tests, a mixed-mode kit demo and a Russian installation
+  guide. Delivery includes only changed/new files relative to motif stage 2.
+
+## v111 — Motifs stage 2: bounded development (2026-10-17)
+
+- Added a separate motif_development module: repeatable melodic/rhythmic
+  variants, limited edit budgets, protected metrical/phrase/accent anchors,
+  configurable cycle periods and periodic returns to the immutable theme.
+- SEQ regenerates when its scheduled source variant changes; LIVE reads the
+  same variant. Pending settings commit at cycle boundaries. Early humanized
+  notes cannot rewind a variant or prematurely advance sibling Drum Voices.
+- Added compact Inspector controls for development, capture, holds, eight
+  distinct recent variants, recall and saving a variant as a reusable theme.
+  Captures and holds persist in projects; history is session-local.
+- Added role/generator coverage, MIDI comparisons, boundary/early-onset,
+  persistence and Qt interaction regressions, plus a demo and Russian guide.
+- Delivery is a changed/new-files-only patch against motif stage 1.
+
+## v111 — Motifs stage 1: shared beat clock (2026-10-17)
+
+- Added a transport-owned quarter-note clock shared with phrase / technique
+  progress. Tempo edits preserve fractional beat position; delayed ticks no
+  longer discard elapsed musical time or restart the current phrase stage.
+- Bound motifs now play their complete note/rest/velocity sequence in LIVE
+  and SEQ, independently of generator rest masks and project pattern LENGTH.
+  The first delayed worker tick retains the opening note. Mute, regeneration
+  and SEQ/LIVE switching preserve motif phase; stalls skip overdue slots.
+- Added per-block / Drum Voice motif selection and Step controls in SOURCE,
+  a current-position readout, explicit Off and scoped Phrase auto modes.
+  Inspector updates resolve current widgets and retain the pinned kit.
+- Unified motif dynamics / articulation across SEQ and LIVE. Existing free
+  LIVE generators keep their own timing and dynamics behavior.
+- Added a demo and Russian usage guide. Motif evolution/history and coordinated
+  kit arrangement are deliberately left for subsequent stages.
+- Validation: 495 automated tests pass, including 19 new clock/MIDI,
+  dynamics, persistence and Inspector cases. The kit lifecycle regression
+  waits for the coalesced edit instead of assuming a fixed UI rebuild time.
+
+## v111 — Drum Kit preview lifetime fix (2026-10-17)
+
+- Fixed `AlgorithmPreviewWidget already deleted` when changing kit Density,
+  Humanize or Fill with the parent DRUM selected. The hidden parent SOURCE
+  section no longer creates a preview and stays owned by the Inspector page.
+- Preview updates now resolve the current page's widget and verify its block
+  and project, rather than retaining a Qt wrapper across Inspector rebuilds.
+  The same fix covers ordinary parameter and mutation editor updates.
+- Added regression tests that reproduce the original exception and cover
+  parent/voice selection, page replacement and project switching during the
+  pending 35 ms kit update.
+- Validation: 476 automated tests pass, including 9 new lifecycle regressions.
+
+## v111 — Working Drum Kit controls (2026-10-17)
+
+- Connected kit Density, Swing, Humanize and Fill to SEQ and LIVE generation.
+- Added deterministic hit retention, bounded timing/velocity humanization,
+  paired LIVE swing, and fills in the final quarter of each structure cycle.
+- Kit controls combine with voice settings without overwriting them. Fill
+  candidates pass through the normal voice processing and master density gate.
+- Neutral defaults are Density 1 and Swing/Humanize/Fill 0; explicit saved
+  values remain active. Added tooltips describing each control.
+- Coalesced kit edits under the transport lock; no editor rebuild or LIVE
+  phase reset while dragging. Preserve LIVE snapshots during SEQ regeneration.
+- Fixed SEQ voice regeneration inside a DRUM container whose mode is LIVE.
+- Added generator, timing, relation-source, persistence and UI behavior tests.
+- Validation: 467 automated tests pass, including 62 kit-control cases.
+
+## v111 — Inline Mutators and Relations (2026-10-16)
+
+- Unified Mutation, Process and Relations creation: `+ Add` immediately adds
+  an editable row, without a separate dialog.
+- Mutator type, target and amount can now all be changed in place.
+- Replaced the relation table / selected inspector pair with a scrollable
+  inspector containing every editable route. Each row has Enable, Copy and
+  Remove controls; filtering is retained and new rows scroll into view.
+- Added block-colour markers to both Source and Destination menus and their
+  selected values. Markers and names refresh after block edits.
+- Mutation and Process additions now belong to the selected Drum Voice when
+  its settings are open. Process type changes also work on that voice.
+- Saved mutation chains now restore exactly; removed default mutations are
+  no longer reinserted on loading. Drum Voice mutation/process objects are
+  properly reconstructed from JSON.
+- Replaced outdated table-specific source checks with behavioral UI tests.
+
 ## v111 — Perform compact layout and phrase duration (2026-10-16)
 
 - Removed the separate Phrase Form panel from Perform.
