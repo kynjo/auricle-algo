@@ -38,7 +38,7 @@ from motif_development import MODES as MOTIF_MODES, settings as motif_settings, 
 from pattern_chance import step_chances
 from drum_editing import sound_snapshot, apply_sound
 from project_history_ui import HistoryController
-from project_history import document_state
+from project_history import document_state, parameter_only_changes
 from auricle_persistence import project_from_dict
 from harmonic_plan_ui import HarmonicPlanPanel
 from instrument_dialogue_ui import DialogueControls
@@ -4663,6 +4663,8 @@ class MainWindow(QMainWindow):
         self._inspector_refresh_queued = True
 
         def apply():
+            if not self._inspector_refresh_queued:
+                return  # A synchronous project restore already refreshed it.
             self._inspector_refresh_queued = False
             anchor = getattr(self, "_pending_inspector_anchor", None)
             self._pending_inspector_anchor = None
@@ -4959,6 +4961,7 @@ class MainWindow(QMainWindow):
         label.setText(f"Step {motif.index_at(beat, step) + 1}/{motif.steps} · Cycle {motif.steps * step:g} beats · Beat {beat:.2f}{suffix}")
 
     def _refresh_inspector(self, restore_anchor=None):
+        self._inspector_refresh_queued = False
         # Every rebuild replaces the QScrollArea page.  Previously deferred
         # scroll callbacks captured the old page, which may already have been
         # deleted by QScrollArea::setWidget() when another rebuild occurred
@@ -6271,7 +6274,102 @@ class MainWindow(QMainWindow):
             return
         self._install_project(project, path, f"Loaded {Path(path).name}")
 
-    def _install_project(self, project, path, message):
+    def _restore_parameter_history(self, before, state):
+        """Restore knob/macro edits without replacing models or their widgets.
+
+        Only controls with explicit parameter bindings can use this path. Other
+        edits retain the complete document restore, including topology changes.
+        """
+        from copy import deepcopy
+        changes = parameter_only_changes(before, state)
+        if changes is None:
+            return False
+        if any(getattr(self, name, None) for name in (
+                '_block_type_change_pending', '_algorithm_change_pending',
+                '_mode_change_pending', '_process_type_pending', '_port_change_pending')):
+            # The full restore also cancels queued structural edits. They must
+            # not run after Undo and silently overwrite the restored document.
+            return False
+        roots = [self.inspector_scroll.widget()]
+        if self.drum_kit_layout.count():
+            roots.append(self.drum_kit_layout.itemAt(0).widget())
+        controls = [control for root in roots if root is not None
+                    for control in root.findChildren(Knob)
+                    if hasattr(control, '_auricle_parameter')]
+        bindings = {control._auricle_parameter for control in controls}
+        if any((bid, key) not in bindings for bid, keys in changes.items() for key in keys):
+            return False
+
+        self._installing_project = True
+        try:
+            self.transport.stop()
+            self.transport.drum_output_history.clear()
+            # All objects remain the same: the Inspector/Kit signal closures,
+            # relation rows and Perform cards must keep editing current models.
+            def restore(payloads):
+                for payload in payloads:
+                    block = self.get_entity(payload['id'])
+                    block.parameters.clear()
+                    block.parameters.update(deepcopy(payload.get('parameters', {})))
+                    block.outputs = {}
+                    restore(payload.get('drum_voices') or [])
+            restore(state['blocks'])
+            self.project.macros = deepcopy(state.get('macros', []))
+            self.project.performance = deepcopy(state.get('performance', {}))
+            self.project.motifs = deepcopy(state.get('motifs', {}))
+            self.project.phrase_state = {}
+            self.engine = MusicEngine(self.project)
+            self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
+            self.performance.director_panel.apply_to_engine()
+            self.engine.generate()
+            for control in controls:
+                bid, key = control._auricle_parameter
+                block = self.get_entity(bid)
+                blocked = control.blockSignals(True)
+                try:
+                    control.setValue(block.parameters.get(key, control.default))
+                finally:
+                    control.blockSignals(blocked)
+            self.global_macro_bar.refresh_from_project()
+            self.performance.phrase_panel.sync_from_project()
+            for card in self.performance.cards.values():
+                blocked = card.enable.blockSignals(True)
+                card.enable.setChecked(False)
+                card.enable.setText('ENABLE')
+                card.enable.blockSignals(blocked)
+                card.status.setText('idle')
+            block = self._selected_inspector_entity()
+            self._update_algorithm_preview(block)
+            if block is not None:
+                p = block.parameters
+                summaries = {
+                    'inspectorGroup_GENERATOR': self._generator_summary(block),
+                    'inspectorLayer_STRUCTURE': f"D {float(p.get('fill_density', 1)):.2f} · P {float(p.get('event_probability', 1)):.2f}",
+                    'inspectorLayer_MUSICAL': f"{p.get('scale_name', self.project.scale)} · T {float(p.get('transpose', 0)):+.0f} · O {float(p.get('octave', 0)):+.0f}",
+                    'inspectorGroup_ROLE': f"{block.block_type} · center {float(p.get('role_center', 0)):+.0f} · width {float(p.get('role_width', 24)):.0f} · density {float(p.get('role_density', 1)):.2f}",
+                    'inspectorGroup_REPRESENTATION': f"Vel {float(p.get('velocity_base', .72)):.2f} · Accent {float(p.get('velocity_accent', .18)):.2f}",
+                }
+                for name, summary in summaries.items():
+                    group = self.inspector_scroll.widget().findChild(QWidget, name)
+                    if group is not None:
+                        group.set_summary(summary)
+            if hasattr(self, 'piano_roll') and isValid(self.piano_roll):
+                self.piano_roll.engine = self.engine
+                self.piano_roll.set_frozen(False)
+                freeze = self.piano_roll.parentWidget().findChild(QCheckBox)
+                if freeze is not None:
+                    blocked = freeze.blockSignals(True)
+                    freeze.setChecked(False)
+                    freeze.blockSignals(blocked)
+            self._update_piano_roll()
+            self._update_kit_status()
+            self._update_motif_status()
+            self.relation_graph._refresh_builtin_status()
+            return True
+        finally:
+            self._installing_project = False
+
+    def _install_project(self, project, path, message, selection=None):
         self._installing_project = True
         for name in ("_block_type_change_pending", "_algorithm_change_pending", "_mode_change_pending",
                      "_process_type_pending", "_port_change_pending", "_regen_pending"):
@@ -6286,6 +6384,16 @@ class MainWindow(QMainWindow):
         self.engine = MusicEngine(self.project)
         self.transport.app = self
         self.selected_block_id = self.project.blocks[0].id if self.project.blocks else None
+        if selection is None:
+            # Keep Open/Reload's existing voice selection when it still belongs
+            # to the first block; Undo supplies its explicit block/voice pair.
+            selection = (self.selected_block_id, self.selected_drum_voice_id)
+        self.selected_drum_voice_id = None
+        block = self.get_block(selection[0])
+        if block is not None:
+            self.selected_block_id = block.id
+            if any(voice.id == selection[1] for voice in block.drum_voices or []):
+                self.selected_drum_voice_id = selection[1]
         self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
         # Sync the header widgets without firing their handlers: _harmony_changed
         # would otherwise overwrite the loaded per-block scale settings.

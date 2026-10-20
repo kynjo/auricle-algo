@@ -45,6 +45,48 @@ def encode(data):
     return json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(',', ':'), allow_nan=False)
 
 
+def parameter_only_changes(before, after):
+    """Return numeric parameter edits, or None if the UI structure may change.
+
+    Macro values are also safe: their names, routes and order must stay intact.
+    Keep this conservative; menus, patterns, chains and topology use a rebuild.
+    """
+    def without(data, *keys):
+        return {key: value for key, value in data.items() if key not in keys}
+
+    if without(before, 'blocks', 'macros') != without(after, 'blocks', 'macros'):
+        return None
+    old_macros, new_macros = before.get('macros', []), after.get('macros', [])
+    if len(old_macros) != len(new_macros):
+        return None
+    for old, new in zip(old_macros, new_macros):
+        if without(old, 'value') != without(new, 'value'):
+            return None
+    changes = {}
+    missing = object()
+
+    def compare(old_items, new_items):
+        if len(old_items) != len(new_items):
+            return False
+        for old, new in zip(old_items, new_items):
+            if without(old, 'parameters', 'drum_voices') != without(new, 'parameters', 'drum_voices'):
+                return False
+            a, b = old.get('parameters', {}), new.get('parameters', {})
+            keys = {key for key in a.keys() | b.keys() if a.get(key, missing) != b.get(key, missing)}
+            if any(not isinstance(values[key], (int, float))
+                   for key in keys for values in (a, b) if key in values):
+                return False
+            if keys:
+                changes[new['id']] = keys
+            if (old.get('drum_voices') is None) != (new.get('drum_voices') is None):
+                return False
+            if not compare(old.get('drum_voices') or [], new.get('drum_voices') or []):
+                return False
+        return True
+
+    return changes if compare(before.get('blocks', []), after.get('blocks', [])) else None
+
+
 class ProjectHistory:
     def __init__(self, state, limit=150):
         self.limit = max(2, int(limit))

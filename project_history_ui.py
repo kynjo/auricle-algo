@@ -11,6 +11,9 @@ from PySide6.QtWidgets import QApplication, QSlider, QMessageBox, QInputDialog, 
 from auricle_persistence import project_from_dict
 from project_history import ProjectHistory, RecoveryStore, document_state, process_alive
 
+_GESTURE_EVENTS = frozenset((QEvent.MouseButtonPress, QEvent.MouseButtonRelease,
+                           QEvent.Wheel, QEvent.KeyPress, QEvent.ContextMenu))
+
 
 class HistoryController(QObject):
     def __init__(self, host):
@@ -95,20 +98,28 @@ class HistoryController(QObject):
     def move(self, redo=False):
         self.flush()
         if not (self.history.can_redo if redo else self.history.can_undo): return
+        before = self.snapshot()
         state = self.history.redo() if redo else self.history.undo()
         host = self.host
         selected, voice = host.selected_block_id, host.selected_drum_voice_id
         self.restoring = True
+        # Widget construction emits thousands of layout/style events. History
+        # only needs user gestures; do not route rebuild traffic through Python.
+        app = QApplication.instance()
+        app.removeEventFilter(self)
+        updates_enabled = host.updatesEnabled()
+        host.setUpdatesEnabled(False)
         try:
             with host.transport._state_lock:
                 running = host.transport.running
                 position = host.engine.clock.position_beats
                 active = bool(host.engine.performance.active or host.engine.director.phrase.running)
-                host._install_project(project_from_dict(state, normalize=False), host.current_path, 'Redo' if redo else 'Undo')
-                if host.get_block(selected) is not None:
-                    host.selected_block_id = selected
-                    host.selected_drum_voice_id = voice if host.get_entity(voice) is not None else None
-                    host._refresh_all()
+                message = 'Redo' if redo else 'Undo'
+                if host._restore_parameter_history(before, state):
+                    host.set_message(message)
+                else:
+                    host._install_project(project_from_dict(state, normalize=False), host.current_path,
+                                          message, selection=(selected, voice))
                 if running:
                     # Keep musical time; an undo must not restart every part at bar 1.
                     now = time.monotonic()
@@ -118,10 +129,17 @@ class HistoryController(QObject):
                     host.transport._master_due = now
                     host.transport._master_step = int(position * 4)
                     host.transport.running = True
-                    host.transport.refresh_ports()
+                    # Parameter Undo must not probe/reopen native MIDI devices.
+                    def ports(data):
+                        return [(b.get('midi_port', ''), [v.get('midi_port', '') for v in b.get('drum_voices') or []])
+                                for b in data.get('blocks', [])]
+                    if ports(before) != ports(state):
+                        host.transport.refresh_ports()
                 if active: host.set_message(('Redo' if redo else 'Undo') + ' · performance gestures stopped')
         finally:
             self.restoring = False
+            host.setUpdatesEnabled(updates_enabled)
+            app.installEventFilter(self)
         self.group = None
         self.sync_actions()
         self.recovery_timer.start()
@@ -172,10 +190,10 @@ class HistoryController(QObject):
         dialog.show()
 
     def eventFilter(self, obj, event):
+        if self.restoring: return False
         kind = event.type()
-        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.Wheel,
-                        QEvent.KeyPress, QEvent.ContextMenu): return False
-        if self.restoring or not isValid(self.host) or not isValid(obj): return False
+        if kind not in _GESTURE_EVENTS: return False
+        if not isValid(self.host) or not isValid(obj): return False
         if not isinstance(obj, QWidget) or (obj.window() is not self.host and not self.host.isAncestorOf(obj)):
             return False
         parameter = getattr(obj, '_auricle_parameter', None)
