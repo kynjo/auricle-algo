@@ -7,6 +7,7 @@ application theme.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from auricle_resources import asset_path
 
 
 @dataclass(frozen=True)
@@ -117,6 +118,7 @@ def theme_stylesheet(name: str = "Midnight") -> str:
     indicator_off = mix(c.border, c.muted, .30)
     field_hover = mix(c.border, c.accent, .50)
     done_stage = mix(c.card, c.accent, .16)
+    dropdown_arrow = asset_path("dropdown_arrow.png").as_posix()
     return f"""
     QWidget {{ background:{c.bg}; color:{c.text}; font-size:11px; }}
     QMainWindow, QDialog {{ background:{c.bg}; }}
@@ -155,11 +157,18 @@ def theme_stylesheet(name: str = "Midnight") -> str:
     QPushButton#performMute:checked {{ background:{c.danger}; color:{on_danger}; border-color:{c.danger}; }}
     QPushButton#valueStepperButton {{ padding:0; min-width:0; border-radius:0; font-size:13px; font-weight:700; }}
     QLineEdit#valueStepperEditor {{ border-radius:0; padding:0 2px; }}
+    QWidget#transportField QLineEdit {{ font-size:13px; }}
+    QComboBox#transportField {{ min-height:34px; font-size:12px; }}
+    QWidget#transportField QPushButton#valueStepperButton {{ font-size:15px; min-width:26px; max-width:26px; }}
+    QLabel#transportLabel {{ color:{c.muted}; font-weight:600; }}
     QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {{ background:{c.input}; color:{c.text}; border:1px solid {c.border}; border-radius:4px; padding:1px 4px; min-height:18px; selection-background-color:{c.selection}; selection-color:{c.text}; }}
+    QComboBox {{ border-radius:6px; }}
+    QComboBox::drop-down {{ subcontrol-origin:padding; subcontrol-position:top right; width:18px; border:0; border-top-right-radius:6px; border-bottom-right-radius:6px; }}
+    QComboBox::down-arrow {{ image:url("{dropdown_arrow}"); width:10px; height:6px; }}
     QComboBox:hover, QLineEdit:hover {{ border-color:{field_hover}; }}
     QComboBox:focus, QLineEdit:focus {{ border-color:{c.accent}; }}
     QComboBox:disabled, QLineEdit:disabled {{ color:{disabled_fg}; }}
-    QComboBox QAbstractItemView {{ background:{c.card}; color:{c.text}; border:1px solid {c.border}; selection-background-color:{c.selection}; selection-color:{c.text}; outline:0; }}
+    QComboBox QAbstractItemView {{ background:{c.card}; color:{c.text}; border:1px solid {c.border}; border-radius:6px; padding:3px; selection-background-color:{c.selection}; selection-color:{c.text}; outline:0; }}
     QSpinBox#minimalSpinBox, QDoubleSpinBox#minimalSpinBox {{ background:{c.input}; color:{c.text}; border:0; border-radius:0; padding:1px 2px; min-height:22px; }}
     QLineEdit#minimalSpinEdit {{ background:transparent; color:{c.text}; border:0; border-radius:0; padding:0; min-height:0; }}
     QCheckBox {{ spacing:6px; }}
@@ -204,7 +213,12 @@ def theme_stylesheet(name: str = "Midnight") -> str:
     QMenuBar {{ background:{c.bg}; }} QMenuBar::item {{ background:transparent; padding:3px 9px; }} QMenuBar::item:selected {{ background:{c.tab}; border-radius:4px; }}
     QMenu {{ background:{c.card}; border:1px solid {c.border}; padding:4px; }} QMenu::item {{ padding:4px 24px 4px 14px; border-radius:3px; }}
     QMenu::item:selected {{ background:{c.selection}; }} QMenu::item:disabled {{ color:{disabled_fg}; }} QMenu::separator {{ height:1px; background:{c.border}; margin:4px 6px; }}
-    QTabWidget::pane {{ border:1px solid {c.border}; border-radius:5px; background:{c.panel}; }} QTabBar::tab {{ background:{c.tab}; border:1px solid {c.border}; border-bottom:0; padding:5px 12px; margin-right:2px; color:{c.muted}; }} QTabBar::tab:selected {{ background:{c.tabsel}; color:{c.text}; border-color:{c.accent}; }} QTabBar::tab:hover:!selected {{ color:{c.text}; }}
+    QTabWidget::pane {{ border:1px solid {c.border}; border-radius:6px; background:{c.panel}; }}
+    QTabBar::tab {{ background:{c.tab}; border:1px solid {c.border}; border-bottom:0; border-top-left-radius:6px; border-top-right-radius:6px; padding:5px 12px; margin-right:3px; color:{c.muted}; }}
+    QTabBar#headerNavigation::tab {{ border-bottom:1px solid {c.border}; border-radius:6px; padding:7px 14px; margin-right:4px; }}
+    QTabBar::tab:selected {{ background:{c.tabsel}; color:{c.text}; border-color:{c.accent}; }}
+    QTabBar#headerNavigation::tab:selected {{ border-color:{c.accent}; }}
+    QTabBar::tab:hover:!selected {{ color:{c.text}; }}
     QLabel#versionLabel {{ color:{c.muted}; font-size:9px; padding-left:2px; }} QLabel#midiIndicator {{ background:{c.muted}; border-radius:2px; }} QLabel#performDot {{ background:{c.muted}; border-radius:4px; }} QSplitter::handle {{ background:{c.border}; }} QStatusBar {{ color:{c.muted}; }}
     QToolTip {{ background:{c.card}; color:{c.text}; border:1px solid {c.border}; padding:4px; }}
     QTableWidget {{ background:{c.panel}; alternate-background-color:{c.card}; gridline-color:{c.border}; color:{c.text}; }}

@@ -11,7 +11,7 @@ from shiboken6 import isValid
 from PySide6.QtCore import Qt, Signal, QTimer, QSize, QRectF, QPoint, QPointF, QEvent
 from PySide6.QtGui import QPainter, QPen, QBrush, QColor, QPixmap, QIcon, QPalette, QKeySequence, QShortcut, QPainterPath
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QFormLayout,
     QLabel, QPushButton, QSlider, QComboBox,
     QListWidget, QListWidgetItem, QGroupBox, QLineEdit, QDialog,
     QDialogButtonBox, QMessageBox, QFileDialog, QSplitter, QScrollArea, QMenu,
@@ -28,7 +28,7 @@ from auricle_core import (
 )
 
 from performance_presets import phrases as performance_phrases, phrase_for, phrase_with_duration, interpolate_preset
-from ui_themes import theme_names, theme_palette, theme_stylesheet, mix as theme_mix, on_color
+from ui_themes import theme_names, theme_palette, theme_stylesheet, mix as theme_mix, on_color, is_light_theme
 from help_content import help_html
 from auricle_drum import KIT_DEFAULTS, KIT_TOOLTIPS, kit_value
 from coordinated_kit import (ROLES as KIT_ROLES, STYLES as KIT_STYLES, METERS as KIT_METERS,
@@ -1922,54 +1922,71 @@ class GlobalMacroBar(QFrame):
         self.sliders = []
         self.values = []
         self.labels = []
+        self.cards = []
         self.setObjectName("globalMacroBar")
+        self.setAccessibleName("Global macros")
         self.setToolTip("Global Director controls: Energy, Tension, Density and Variation")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(5, 2, 5, 2)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(8)
         title = QLabel("GLOBAL")
         title.setObjectName("muted")
         title.setToolTip("Global musical character")
         layout.addWidget(title)
         for index, (default_name, control) in enumerate(GLOBAL_MACRO_DEFS):
-            column = QVBoxLayout()
-            column.setContentsMargins(0, 0, 0, 0)
-            column.setSpacing(0)
+            card = QFrame()
+            card.setObjectName("globalMacroCard")
+            card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            row = QHBoxLayout(card)
+            row.setContentsMargins(9, 7, 9, 7)
+            row.setSpacing(7)
             name = QLabel(default_name)
-            name.setAlignment(Qt.AlignCenter)
-            name.setObjectName("knobLabel")
-            color = GLOBAL_MACRO_COLORS[index]
-            name.setStyleSheet(f"color:{color}; font-weight:700;")
+            name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            name.setFixedWidth(62)
             slider = QSlider(Qt.Horizontal)
             slider.setRange(0, 100)
             # Let the four header controls share the available width.  A
             # fixed 150 px slider left unused space on wide windows and made
             # the header crowd itself at the minimum window width.
-            slider.setMinimumWidth(72)
+            slider.setMinimumWidth(48)
+            slider.setMinimumHeight(26)
             slider.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            slider.setStyleSheet(
-                f"QSlider::groove:horizontal {{ height:6px; background:{theme_mix(active_theme().border, color, .35)}; border-radius:3px; }}"
-                f"QSlider::sub-page:horizontal {{ background:{color}; border-radius:3px; }}"
-                f"QSlider::add-page:horizontal {{ background:{active_theme().input}; border-radius:3px; }}"
-                f"QSlider::handle:horizontal {{ background:{color}; border:1px solid {color}; width:14px; margin:-5px 0; border-radius:7px; }}"
-                f"QSlider::handle:horizontal:hover {{ background:{active_theme().text}; }}"
-            )
             slider.setAccessibleName(f"Global {default_name}")
             slider.setToolTip(f"{default_name} Director control")
             value = QLabel("0%")
-            value.setAlignment(Qt.AlignCenter)
-            value.setObjectName("knobValue")
-            value.setStyleSheet(f"color:{color}; font-weight:600;")
-            column.addWidget(name)
-            column.addWidget(slider)
-            column.addWidget(value)
-            layout.addLayout(column, 1)
+            value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            # Reserve the full 100% width so dragging never shifts the track.
+            value.setFixedWidth(34)
+            row.addWidget(value)
+            row.addWidget(slider, 1)
+            row.addWidget(name)
+            layout.addWidget(card, 1)
+            self.cards.append(card)
             self.labels.append(name)
             self.sliders.append(slider)
             self.values.append(value)
             slider.valueChanged.connect(lambda raw, i=index: self._changed(i, raw))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.apply_theme(active_theme())
         self.refresh_from_project()
+
+    def apply_theme(self, theme):
+        for index, color in enumerate(GLOBAL_MACRO_COLORS):
+            ink = theme_mix(color, theme.text, .35) if is_light_theme(theme) else color
+            self.cards[index].setStyleSheet(
+                f"QFrame#globalMacroCard {{ background:{theme_mix(theme.card, color, .06)}; "
+                f"border:1px solid {theme_mix(theme.border, color, .45)}; border-radius:7px; }}"
+            )
+            for label in (self.labels[index], self.values[index]):
+                label.setStyleSheet(f"color:{ink}; font-size:11px; font-weight:600;")
+            self.sliders[index].setStyleSheet(
+                "QSlider { background:transparent; }"
+                f"QSlider::groove:horizontal {{ height:6px; background:{theme_mix(theme.border, color, .35)}; border-radius:3px; }}"
+                f"QSlider::sub-page:horizontal {{ background:{color}; border-radius:3px; }}"
+                f"QSlider::add-page:horizontal {{ background:{theme.input}; border-radius:3px; }}"
+                f"QSlider::handle:horizontal {{ background:{color}; border:1px solid {ink}; width:14px; margin:-5px 0; border-radius:7px; }}"
+                f"QSlider::handle:horizontal:hover {{ background:{theme.text}; }}"
+            )
 
     def _changed(self, index, raw):
         self.values[index].setText(f"{int(raw)}%")
@@ -1981,8 +1998,11 @@ class GlobalMacroBar(QFrame):
             macro = macros[index]
             name = str(macro.get("name") or default_name)
             value = max(0, min(100, int(round(float(macro.get("value", .5)) * 100))))
-            self.labels[index].setText(name)
+            label = self.labels[index]
+            label.setText(label.fontMetrics().elidedText(name, Qt.ElideRight, label.width()))
+            label.setAccessibleName(name)
             self.labels[index].setToolTip(f"{name} → Director {macro.get('control', _control)}")
+            self.sliders[index].setAccessibleName(f"Global {name}")
             self.sliders[index].blockSignals(True)
             self.sliders[index].setValue(value)
             self.sliders[index].blockSignals(False)
@@ -2671,13 +2691,14 @@ class PatternChanceEditor(QWidget):
         self.host._mark_dirty(); self._refresh_value()
 
 
-class DrumKitEditor(QGroupBox):
+class DrumKitEditor(LayerGroup):
     """Compact Drum Machine editor embedded in the DRUM inspector."""
     VOICE_COLORS = ("#e57373", "#ffb74d", "#fff176", "#81c784", "#64b5f6", "#ba68c8")
     voice_selected = Signal(int)
 
     def __init__(self, host, drum, selected_voice_id=None, parent=None):
-        super().__init__("DRUM VOICES / KIT", parent)
+        expanded = getattr(host, "_inspector_state", {}).get((drum.id, "DRUM KIT"), True)
+        super().__init__("DRUM VOICES / KIT", parent, expanded=expanded)
         self.host = host
         self.drum = drum
         self.selected_voice_id = selected_voice_id
@@ -2685,6 +2706,22 @@ class DrumKitEditor(QGroupBox):
         ensure_drum_voices(drum)
         self.setObjectName("drumKitEditor")
         self._build()
+        self._apply_children_visibility()
+        self._sync_layout_geometry()
+        self.accordion_toggled.connect(
+            lambda checked: self.host._remember_group(self.drum.id, "DRUM KIT", checked)
+        )
+
+    def _set_expanded(self, expanded):
+        # Collapsing the large kit must not move the Blocks/Inspector divider
+        # back to the splitter's original size preference.
+        splitter = self.parentWidget()
+        while splitter is not None and not isinstance(splitter, QSplitter):
+            splitter = splitter.parentWidget()
+        sizes = splitter.sizes() if splitter is not None else None
+        super()._set_expanded(expanded)
+        if sizes is not None:
+            splitter.setSizes(sizes)
 
     def _voice_pattern(self, voice):
         raw = str(voice.parameters.get("pattern", "1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0"))
@@ -2880,8 +2917,16 @@ class DrumKitEditor(QGroupBox):
         self.host._queue_inspector_refresh()
 
     def _build(self):
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(7, 7, 7, 7)
+        # Keep the full kit in one body, just like the other Inspector layers.
+        # Live updates can still show/hide individual hints while the body is
+        # collapsed without making those hints escape the accordion.
+        self.body = QWidget()
+        frame = QVBoxLayout(self)
+        frame.setContentsMargins(7, 10, 7, 7)
+        frame.setSpacing(4)
+        frame.addWidget(self.body)
+        outer = QVBoxLayout(self.body)
+        outer.setContentsMargins(4, 4, 4, 4)
         outer.setSpacing(5)
         note = QLabel("Select a voice to edit its generator below. Role is independent of its name and MIDI note.")
         note.setObjectName("muted")
@@ -4167,7 +4212,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(4)
 
         # Global transport / musical context bar stays visible on every tab.
-        top = QHBoxLayout(); top.setSpacing(5)
+        top = QHBoxLayout(); top.setSpacing(10)
         logo = QLabel()
         self.brand_logo = logo
         logo.setObjectName("brandLogo")
@@ -4184,6 +4229,7 @@ class MainWindow(QMainWindow):
         # Navigation and global musical controls live in the window header so
         # the four macros remain available on every tab.
         self.header_nav = QTabBar()
+        self.header_nav.setObjectName("headerNavigation")
         self.header_nav.setExpanding(False)
         self.header_nav.setUsesScrollButtons(True)
         self.header_nav.setDrawBase(False)
@@ -4197,22 +4243,38 @@ class MainWindow(QMainWindow):
         self.stop.clicked.connect(self._stop_clicked)
         top.addWidget(self.play); top.addWidget(self.stop)
         top.addSpacing(6)
-        top.addWidget(QLabel("BPM"))
+        self._transport_fields = []
+        def add_transport_field(caption, field, width):
+            group = QHBoxLayout()
+            group.setSpacing(6)
+            label = QLabel(caption)
+            label.setObjectName("transportLabel")
+            group.addWidget(label)
+            field.setObjectName("transportField")
+            field.setFixedSize(width, 38)
+            if isinstance(field, ValueStepper):
+                field.minus.setFixedSize(28, 38)
+                field.plus.setFixedSize(28, 38)
+                field.editor.setFixedHeight(38)
+            group.addWidget(field)
+            top.addLayout(group)
+            self._transport_fields.append((group, label))
+
         self.tempo = ContrastSpinBox(); self.tempo.setRange(20, 300); self.tempo.setValue(self.project.tempo)
-        self.tempo.valueChanged.connect(self._tempo_changed); top.addWidget(self.tempo)
+        self.tempo.valueChanged.connect(self._tempo_changed)
+        add_transport_field("BPM", self.tempo, 90)
         self.tempo.set_accessible_label("Tempo (BPM)")
-        top.addWidget(QLabel("LENGTH"))
         self.length = ContrastSpinBox(); self.length.setRange(1, 128); self.length.setValue(self.project.length)
-        self.length.valueChanged.connect(self._length_changed); top.addWidget(self.length)
+        self.length.valueChanged.connect(self._length_changed)
+        add_transport_field("LENGTH", self.length, 90)
         self.length.set_accessible_label("Pattern length (steps)")
-        top.addSpacing(4)
-        top.addWidget(QLabel("KEY"))
         self.key = QComboBox(); self.key.addItems(NOTE_NAMES); self.key.setCurrentIndex(self.project.root_note % 12)
-        self.key.currentIndexChanged.connect(self._harmony_changed); top.addWidget(self.key)
+        self.key.currentIndexChanged.connect(self._harmony_changed)
+        add_transport_field("KEY", self.key, 64)
         self.key.setAccessibleName("Key")
-        top.addWidget(QLabel("SCALE"))
         self.scale = QComboBox(); self.scale.addItems(SCALES); self.scale.setCurrentText(self.project.scale)
-        self.scale.currentTextChanged.connect(self._harmony_changed); top.addWidget(self.scale)
+        self.scale.currentTextChanged.connect(self._harmony_changed)
+        add_transport_field("SCALE", self.scale, 174)
         self.scale.setAccessibleName("Scale")
         top.addStretch()
         self.theme_label = QLabel("THEME")
@@ -4275,7 +4337,7 @@ class MainWindow(QMainWindow):
         self.drum_kit_host.setObjectName("drumKitHost")
         self.drum_kit_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.drum_kit_layout = QVBoxLayout(self.drum_kit_host)
-        self.drum_kit_layout.setContentsMargins(0, 0, 0, 0)
+        self.drum_kit_layout.setContentsMargins(8, 0, 8, 0)
         self.drum_kit_layout.setSpacing(0)
         self.drum_kit_host.hide()
         rv.addWidget(self.drum_kit_host, 0)
@@ -4436,6 +4498,8 @@ class MainWindow(QMainWindow):
 
     def _refresh_theme_assets(self):
         theme = getattr(self, "_active_theme", None) or active_theme()
+        if hasattr(self, "global_macro_bar"):
+            self.global_macro_bar.apply_theme(theme)
         path = asset_path("auricle_logo.png")
         if path.exists():
             for label, size in ((getattr(self, "brand_logo", None), (56, 53)), (getattr(self, "help_logo", None), (74, 60))):
@@ -6455,11 +6519,16 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, "theme_label"):
-            compact = self.width() < 1040
+            compact = self.width() < 1200
             self.theme_label.setVisible(not compact)
             self.midi_status.setVisible(not compact)
             self.theme_combo.setFixedWidth(88 if compact else 105)
-            self.scale.setMaximumWidth(120 if compact else 16777215)
+            # Stack captions only in compact windows; the larger musical
+            # controls retain their full width and height without overlapping.
+            for group, label in self._transport_fields:
+                group.setDirection(QBoxLayout.TopToBottom if compact else QBoxLayout.LeftToRight)
+                group.setSpacing(3 if compact else 6)
+                label.setAlignment(Qt.AlignCenter if compact else Qt.AlignVCenter | Qt.AlignLeft)
             for button in (self.play, self.stop):
                 button.setStyleSheet("min-width:60px;" if compact else "")
         # Collapse the Inspector to one column when the available width becomes
