@@ -147,6 +147,9 @@ class KitCoordinator:
         owners = {role: [vid for vid, r, muted in roster if r == role and not muted] for _, role in ROLES}
         shared_seed = int(seed) + int(drum.id) * 1009 + variant * 7919
         start = cycle * length
+        tail = groups[-1]
+        fill_slots = {pos for pos in range(length - tail, length)
+                      if kit_random(shared_seed, start + pos, 72) < kit_value(drum, "kit_fill")}
         boundaries = [sum(groups[:i]) for i in range(len(groups))]
         half = boundaries[len(groups) // 2]
         kick = (0, half) if len(groups) > 2 else (0,)
@@ -174,15 +177,10 @@ class KitCoordinator:
                 assign("kick", pos, step in kick, 1.12 if step in kick else .82, anchor=step in kick)
             if step in backbeats:
                 assign("snare" if owners["snare"] else "clap", pos, True, 1.08, anchor=True)
-                if owners["snare"] and step == backbeats[-1]:
-                    assign("clap", pos, False, .72)
             elif step in {max(0, b - 1) for b in backbeats} | {steps - 1}:
                 assign("snare", pos, False, .65)
-            if step == steps - 2 and owners["open_hat"]:
-                assign("open_hat", pos, True, .82)
-            else:
-                assign("closed_hat", pos, step % 2 == 0, .92 if step in boundaries else .68,
-                       anchor=step % 2 == 0)
+            assign("closed_hat", pos, step % 2 == 0, .92 if step in boundaries else .68,
+                   anchor=step % 2 == 0)
             if step in (max(1, half - 2), steps - 2):
                 assign("tom", pos, False, .8)
             if step in {b + g - 1 for b, g in zip(boundaries, groups)}:
@@ -195,8 +193,41 @@ class KitCoordinator:
             salt = cycle * phrase_bars(drum) + bar if varied else 0
             base = bar * steps
             weak = [i for i in range(1, steps) if i not in kick and i not in backbeats]
+
+            # Both backbeat instruments need an authored part. An optional
+            # clap slot intersected with a sparse source could stay silent
+            # forever, regardless of New variant. Share the beat instead of
+            # doubling every snare; half-time uses a clap pickup.
+            if owners["snare"] and owners["clap"]:
+                if len(backbeats) > 1:
+                    choice = int(kit_random(shared_seed + salt * 97, 0, 87) * len(backbeats))
+                    pos = base + backbeats[choice]
+                    for vid in owners["snare"]:
+                        rows[vid][pos] = KitStep()
+                    assign("clap", pos, True, 1.08, anchor=True)
+                else:
+                    pool = [i for i in weak if i < backbeats[0] and base + i not in fill_slots]
+                    pool = pool or [i for i in weak if base + i not in fill_slots]
+                    if pool:
+                        pool.sort(key=lambda i: (i % 2, kit_random(shared_seed + salt * 97, i, 87)))
+                        assign("clap", base + pool[0], True, .88)
+
+            # Open hats own offbeat slots, excluding the actual fill. Keep a
+            # simple ending at Complexity=0; higher values add distinct group
+            # offbeats. This also prevents a one-bar fill erasing the whole part.
+            if owners["open_hat"]:
+                pool = [b + g - 2 for b, g in zip(boundaries, groups)
+                        if base + b + g - 2 not in fill_slots]
+                pool.sort(key=lambda i: kit_random(shared_seed + salt * 97, i, 88)
+                          if complexity > 0 else (i != steps - 2, i))
+                count = min(len(pool), 1 + int(math.ceil(complexity * max(1, len(groups) - 2))))
+                for i in pool[:count]:
+                    for vid in owners["closed_hat"]:
+                        rows[vid][base + i] = KitStep()
+                    assign("open_hat", base + i, True, .88, anchor=True)
+
             for role, amount, lane in (("kick", complexity * .7, 82), ("snare", complexity * .6, 83),
-                                       ("closed_hat", complexity, 84), ("perc", complexity * .8, 85),
+                                       ("closed_hat", complexity, 84), ("perc", complexity, 85),
                                        ("tom", toms, 86)):
                 pool = [i for i in weak if role != "closed_hat" or (i % 2 and i != steps - 2)]
                 # Even subdivisions favour an open groove; Syncopation shifts
@@ -204,17 +235,14 @@ class KitCoordinator:
                 pool.sort(key=lambda i: (kit_random(shared_seed + salt * 97, i, lane)
                                         + (0 if i % 2 else syncopation * .7)
                                         + (0 if not i % 2 else (1 - syncopation) * .35)))
-                count = min(len(pool), int(math.ceil(amount * (4 if role == "tom" else 3)))) if amount > 0 else 0
+                count = min(len(pool), int(math.ceil(amount * (5 if role == "perc" else 4 if role == "tom" else 3)))) if amount > 0 else 0
                 for i in pool[:count]:
                     # An open hat still owns its assigned slot.
                     if role == "closed_hat" and any(rows[vid][base + i].allowed for vid in owners["open_hat"]):
                         continue
                     assign(role, base + i, True, .78 if role == "tom" else .58 + .2 * amount)
 
-        tail = groups[-1]
-        for pos in range(length - tail, length):
-            if kit_random(shared_seed, start + pos, 72) >= kit_value(drum, "kit_fill"):
-                continue
+        for pos in sorted(fill_slots):
             backbeat = [vid for vid in owners["snare"] + owners["clap"] if rows[vid][pos].anchor]
             pool = sorted(owners["snare"] + owners["clap"] + owners["tom"] + owners["perc"])
             pool = pool or sorted(vid for vid, role, muted in roster if role != "free" and not muted)

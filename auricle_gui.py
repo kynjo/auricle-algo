@@ -32,10 +32,12 @@ from ui_themes import theme_names, theme_palette, theme_stylesheet, mix as theme
 from help_content import help_html
 from auricle_drum import KIT_DEFAULTS, KIT_TOOLTIPS, kit_value
 from coordinated_kit import (ROLES as KIT_ROLES, STYLES as KIT_STYLES, METERS as KIT_METERS,
-                             CREATIVE_DEFAULTS, creative_value, KitStep, coordinated,
+                             CREATIVE_DEFAULTS, creative_value, KitStep, KitCoordinator, coordinated,
                              voice_role, infer_role, phrase_bars, STEP_BEATS)
 from motif_development import MODES as MOTIF_MODES, settings as motif_settings, digest as motif_digest
 from pattern_chance import step_chances
+from auricle_catalogs import DEFAULT_PATTERN
+from generators import parse_number_list, fixed_pattern
 from drum_editing import sound_snapshot, apply_sound
 from project_history_ui import HistoryController
 from project_history import document_state, parameter_only_changes
@@ -2555,20 +2557,24 @@ class KitStepRuler(QWidget):
         super().__init__(parent)
         self.cursor = -1
         self.steps = 16
+        self.offset = 0
         self.setMinimumWidth(176)
         self.setFixedHeight(21)
         self.setAccessibleName("Kit bar playhead")
 
-    def set_cursor(self, cursor, steps=16):
-        if cursor != self.cursor or steps != self.steps:
-            self.cursor, self.steps = cursor, steps
+    def set_cursor(self, cursor, steps=16, offset=0):
+        if (cursor, steps, offset) != (self.cursor, self.steps, self.offset):
+            self.cursor, self.steps, self.offset = cursor, max(1, steps), offset
             self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         width = self.width() / self.steps
         font = painter.font(); font.setPixelSize(9 if width < 13 else 10); painter.setFont(font)
-        stride = 2 if width < 13 else 1
+        label_width = painter.fontMetrics().horizontalAdvance(str(self.offset + self.steps)) + 4
+        stride = 1
+        while stride * width < label_width:
+            stride *= 2
         for i in range(self.steps):
             rect = QRectF(i * width + 1, 1, max(1, width - 2), 19)
             if i == self.cursor:
@@ -2578,38 +2584,128 @@ class KitStepRuler(QWidget):
             # squeezing adjacent two-digit numbers into a single string.
             if i == self.cursor or (i % stride == 0 and
                     (self.cursor < 0 or abs(i - self.cursor) >= stride)):
-                painter.drawText(rect.adjusted(-2, 0, 2, 0), Qt.AlignCenter, str(i + 1))
+                painter.drawText(rect.adjusted(-2, 0, 2, 0), Qt.AlignCenter, str(self.offset + i + 1))
+
+
+class DrumPatternLane(QWidget):
+    """One scalable source page; editing retains absolute step indices."""
+    step_toggled = Signal(int, bool)
+    PAGE_SIZE = 32
+
+    def __init__(self, values, offset=0, voice_name="", parent=None):
+        super().__init__(parent)
+        self.values = list(values)
+        self.offset = int(offset)
+        self.voice_name = voice_name
+        self.focus_step = 0
+        # Reserve the same width for every page so changing Length does not
+        # push the Blocks/Inspector divider sideways.
+        self.setMinimumWidth(256)
+        self.setFixedHeight(22)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMouseTracking(True)
+        self.setAccessibleName(f"{voice_name} source pattern, steps {offset + 1}–{offset + len(values)}")
+
+    def set_values(self, values):
+        values = list(values)
+        if values != self.values:
+            self.values = values
+            self.focus_step = min(self.focus_step, max(0, len(values) - 1))
+            self.update()
+
+    def _step_at(self, position):
+        if self.rect().contains(position.toPoint()) and self.values:
+            return min(len(self.values) - 1, int(position.x() * len(self.values) / max(1, self.width())))
+        return None
+
+    def _toggle(self, index):
+        self.focus_step = index
+        checked = not (abs(self.values[index]) > 1e-9)
+        self.values[index] = 1.0 if checked else 0.0
+        self.update()
+        self.step_toggled.emit(self.offset + index, checked)
+
+    def mousePressEvent(self, event):
+        index = self._step_at(event.position())
+        if event.button() == Qt.LeftButton and index is not None:
+            self.setFocus(Qt.MouseFocusReason)
+            self._toggle(index)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        index = self._step_at(event.position())
+        if index is not None:
+            self.setToolTip(f"{self.voice_name} · step {self.offset + index + 1} · value {self.values[index]:g}\nClick to toggle; editing selects the Pattern generator.")
+        super().mouseMoveEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.values and event.key() in (Qt.Key_Left, Qt.Key_Right):
+            self.focus_step = max(0, min(len(self.values) - 1, self.focus_step + (1 if event.key() == Qt.Key_Right else -1)))
+            self.update(); event.accept(); return
+        if self.values and event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+            self._toggle(self.focus_step); event.accept(); return
+        super().keyPressEvent(event)
+
+    def event(self, event):
+        if event.type() == QEvent.ShortcutOverride and event.key() in (Qt.Key_Space, Qt.Key_Left, Qt.Key_Right):
+            event.accept()
+            return True
+        return super().event(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        palette = self.palette()
+        width = self.width() / max(1, len(self.values))
+        for index, value in enumerate(self.values):
+            rect = QRectF(index * width + 1, 3, max(1, width - 2), 16)
+            active = abs(value) > 1e-9
+            painter.setBrush(palette.highlight() if active else palette.base())
+            painter.setPen(QPen(palette.highlight().color() if active else palette.mid().color(), 1))
+            painter.drawRoundedRect(rect, 2, 2)
+            if (self.offset + index) % 4 == 0:
+                painter.setPen(palette.mid().color())
+                painter.drawLine(QPointF(index * width, 0), QPointF(index * width, 21))
+            if self.hasFocus() and index == self.focus_step:
+                painter.setPen(QPen(palette.text().color(), 1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 1, 1)
 
 
 class KitPlanLane(QWidget):
-    """Read-only arrangement for the current bar; source editing stays below."""
+    """Read-only arrangement page with independent beat and bar boundaries."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumWidth(176)
+        self.setMinimumWidth(256)
         self.setFixedHeight(22)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.steps, self.cursor = [], -1
         self.output_values = None
         self.groups = (4, 4, 4, 4)
-        self.setToolTip("Kit plan before processing: green = protected beat, teal = added hit, outline = optional source slot, orange = fill. The playhead crosses the whole bar, including rests. Edit the generator in SOURCE below.")
+        self.bar_starts = (0,)
+        self.setToolTip("Kit plan before processing: green = protected beat, teal = added hit, outline = optional source slot, orange = fill. Bright separators mark bars. Length sets the visible window; Source edits the generator.")
 
-    def set_plan(self, steps, cursor, groups=(4, 4, 4, 4)):
+    def set_plan(self, steps, cursor, groups=(4, 4, 4, 4), bar_starts=(0,)):
         if self.output_values is not None:
             self.setToolTip("Kit plan before processing: green = protected beat, teal = added hit, outline = optional source slot, orange = fill.")
         count = sum(groups)
         steps = (list(steps) + [KitStep()] * count)[:count]
-        if steps != self.steps or cursor != self.cursor or groups != self.groups or self.output_values is not None:
+        if steps != self.steps or cursor != self.cursor or groups != self.groups or bar_starts != self.bar_starts or self.output_values is not None:
             self.steps, self.cursor = steps, cursor
             self.output_values = None
             self.groups = groups
+            self.bar_starts = bar_starts
             self.update()
 
-    def set_output(self, values, cursor, groups):
+    def set_output(self, values, cursor, groups, bar_starts=(0,)):
         if self.output_values is None:
             self.setToolTip("Accepted generated output: bar height = velocity, dash = rest, grey = not visited. Includes processing, probability and mute; works without a MIDI port. This is not feedback from the instrument.")
         values = list(values)
-        if values != self.output_values or cursor != self.cursor or groups != self.groups:
+        if values != self.output_values or cursor != self.cursor or groups != self.groups or bar_starts != self.bar_starts:
             self.output_values, self.cursor, self.groups = values, cursor, groups
+            self.bar_starts = bar_starts
             self.steps = [KitStep()] * len(values)
             self.update()
 
@@ -2633,7 +2729,7 @@ class KitPlanLane(QWidget):
                     painter.setPen(QPen(QColor("#657982"), 1))
                     painter.drawLine(QPointF(rect.left() + 1, 11), QPointF(rect.right() - 1, 11))
             if i in boundaries:
-                painter.setPen(QPen(QColor("#8295a6"), 1))
+                painter.setPen(QPen(QColor("#d3dfeb" if i in self.bar_starts else "#8295a6"), 2 if i in self.bar_starts else 1))
                 painter.drawLine(QPointF(i * width, 0), QPointF(i * width, 22))
             if i == self.cursor:
                 painter.fillRect(QRectF(i * width + 1, 1, max(1, width - 2), 20), QColor(255, 197, 104, 55))
@@ -2703,6 +2799,13 @@ class DrumKitEditor(LayerGroup):
         self.drum = drum
         self.selected_voice_id = selected_voice_id
         self.plan_lanes = {}
+        self.pattern_lanes = {}
+        self.pattern_length = max(1, int(host.project.length))
+        pages = getattr(host, "_kit_pattern_pages", {})
+        self.pattern_page = min(max(0, pages.get(drum.id, 0)), (self.pattern_length - 1) // DrumPatternLane.PAGE_SIZE)
+        self.pattern_offset = self.pattern_page * DrumPatternLane.PAGE_SIZE
+        self.source_view = bool(getattr(host, "_kit_source_view", False))
+        self._plan_view_cache = None
         ensure_drum_voices(drum)
         self.setObjectName("drumKitEditor")
         self._build()
@@ -2723,24 +2826,53 @@ class DrumKitEditor(LayerGroup):
         if sizes is not None:
             splitter.setSizes(sizes)
 
+    def _source_values(self, voice):
+        if voice.algorithm != "Pattern":
+            # Preview the generator before processing. Editing can turn this
+            # rhythm into a Pattern without baking the effects twice.
+            engine = self.host.engine
+            with self.host.transport._state_lock:
+                length = engine._kit_cycle_length(voice)
+                raw = engine._seq_material(voice, length, random.Random(engine._seed_for(voice)))
+                zero_is_rest = engine._zero_is_rest(voice)
+            values = [0.0 if value is None or (zero_is_rest and abs(float(value)) <= 1e-9)
+                      else 1.0 for value in raw]
+            return fixed_pattern(length, values or [0.0])
+        return parse_number_list(voice.parameters.get("pattern", DEFAULT_PATTERN), float,
+                                 parse_number_list(DEFAULT_PATTERN, float))
+
     def _voice_pattern(self, voice):
-        raw = str(voice.parameters.get("pattern", "1,0,0,0,1,0,0,0,1,0,0,0,1,0,0,0"))
-        values = []
-        for token in raw.replace(";", ",").split(","):
-            try:
-                values.append(float(token.strip()))
-            except (TypeError, ValueError):
-                values.append(0.0)
-        return (values or [1.0, 0.0] * 8)[:16]
+        # Match the generator: short patterns repeat up to global Length.
+        return fixed_pattern(self.pattern_length, self._source_values(voice))
+
+    def refresh_pattern(self, voice):
+        lane = self.pattern_lanes.get(voice.id)
+        if lane is not None:
+            values = self._voice_pattern(voice)
+            lane.set_values(values[self.pattern_offset:self.pattern_offset + DrumPatternLane.PAGE_SIZE])
 
     def _set_pattern(self, voice, index, checked):
-        values = self._voice_pattern(voice)
-        values[index] = 1.0 if checked else 0.0
-        voice.parameters["pattern"] = ",".join(str(int(value)) for value in values)
-        voice.algorithm = "Pattern"
+        with self.host.transport._state_lock:
+            if self.host.get_entity(voice.id) is not voice or not 0 <= index < int(self.host.project.length):
+                return
+            raw = self._source_values(voice)
+            # Keep hidden steps when Length shrinks, and preserve fractional
+            # values and probabilities in every untouched step.
+            count = max(len(raw), int(self.host.project.length))
+            values = fixed_pattern(count, raw)
+            if "pattern_step_chances" in voice.parameters:
+                chances = step_chances(voice.parameters)
+                voice.parameters["pattern_step_chances"] = [chances[i % len(chances)] for i in range(count)]
+            values[index] = 1.0 if checked else 0.0
+            voice.parameters["pattern"] = ",".join(format(value, ".12g") for value in values)
+            changed_algorithm = voice.algorithm != "Pattern"
+            if changed_algorithm:
+                for key in ("pattern_reverse", "pattern_rotation", "pattern_scale"):
+                    voice.parameters.pop(key, None)
+            voice.algorithm = "Pattern"
+            self.host.engine.regenerate(self.drum)
         self.host._mark_dirty()
-        self.host.engine.regenerate(self.drum)
-        if voice.id == getattr(self.host, "selected_drum_voice_id", None):
+        if changed_algorithm or voice.id == getattr(self.host, "selected_drum_voice_id", None):
             self.host._queue_inspector_refresh("SOURCE")
 
     def _changed(self, voice, key, value):
@@ -2771,9 +2903,9 @@ class DrumKitEditor(LayerGroup):
         self.host.engine.regenerate(self.drum)
         # The ModeSwitch lives inside the pinned kit.  Rebuild the kit after
         # the signal unwinds so its lane changes immediately between the
-        # 16-step Pattern controls and the LIVE STREAM label.  The deferred
+        # Pattern controls and the LIVE STREAM label.  The deferred
         # refresh also avoids deleting the emitting Qt button mid-signal.
-        if key in ("mode", "kit_role") or voice.id == getattr(self.host, "selected_drum_voice_id", None):
+        if key in ("mode", "kit_role", "algorithm") or voice.id == getattr(self.host, "selected_drum_voice_id", None):
             self.host._queue_inspector_refresh()
 
     def _set_config(self, key, value):
@@ -2802,8 +2934,19 @@ class DrumKitEditor(LayerGroup):
         self.host._queue_inspector_refresh()
 
     def _view_changed(self, *_):
+        source = self.view_selector.currentData() == "source"
         self.host._kit_output_view = self.view_selector.currentData() == "output"
-        self.update_position()
+        self.host._kit_source_view = source
+        if source != self.source_view:
+            self.host._queue_inspector_refresh()
+        else:
+            self.update_position()
+
+    def _pattern_page_changed(self, index):
+        pages = getattr(self.host, "_kit_pattern_pages", {})
+        pages[self.drum.id] = int(index)
+        self.host._kit_pattern_pages = pages
+        self.host._queue_inspector_refresh()
 
     def _selected_voice(self):
         return next((v for v in self.drum.drum_voices if v.id == self.selected_voice_id), None)
@@ -2867,6 +3010,9 @@ class DrumKitEditor(LayerGroup):
         self.keep_beat.setEnabled(active)
         self.new_variant.setEnabled(active)
         self.view_selector.setEnabled(active)
+        if not active or self.source_view:
+            source_steps = min(DrumPatternLane.PAGE_SIZE, self.pattern_length - self.pattern_offset)
+            self.plan_ruler.set_cursor(-1, source_steps, self.pattern_offset)
         for knob in self.creative_knobs:
             knob.setEnabled(active)
         roles = {voice_role(v) for v in self.drum.drum_voices if not v.muted}
@@ -2875,7 +3021,7 @@ class DrumKitEditor(LayerGroup):
         self.role_warning.setText("Missing beat roles: " + ", ".join(missing) + ". Check Role or use Auto roles.")
         self.role_warning.setVisible(active and bool(missing))
         if not active:
-            self.plan_status.setText("Independent voice timing")
+            self.plan_status.setText(f"Source: {self.pattern_length} steps · independent timing")
             return
         with self.host.transport._state_lock:
             beat = self.host.engine.clock.position_beats
@@ -2883,19 +3029,42 @@ class DrumKitEditor(LayerGroup):
             slot = max(0, int(math.floor(beat / STEP_BEATS + 1e-8))) % plan.length
             absolute_slot = max(0, int(math.floor(beat / STEP_BEATS + 1e-8)))
             steps = plan.steps_per_bar
-            bar_start = slot // steps * steps
-            cursor = slot % steps if self.host.transport.running else -1
-            self.plan_ruler.set_cursor(cursor, steps)
+            count = min(DrumPatternLane.PAGE_SIZE, self.pattern_length - self.pattern_offset)
+            window_start = absolute_slot // self.pattern_length * self.pattern_length + self.pattern_offset
+            cursor = absolute_slot - window_start
+            if not self.host.transport.running or not 0 <= cursor < count:
+                cursor = -1
+            if not self.source_view:
+                self.plan_ruler.set_cursor(cursor, count, self.pattern_offset)
+            # Length controls the display, while meter/phrase keep musical
+            # timing. A page can cross bars and even phrase cycles. Cache the
+            # preview so a transport repaint does not recompose future plans.
+            key = (plan.token, window_start, count)
+            if self._plan_view_cache is None or self._plan_view_cache[0] != key:
+                boundaries = {sum(plan.groups[:i]) for i in range(len(plan.groups))}
+                cuts = [0] + [i for i in range(1, count) if (window_start + i) % steps in boundaries] + [count]
+                groups = tuple(b - a for a, b in zip(cuts, cuts[1:]))
+                bar_starts = tuple(i for i in range(count) if (window_start + i) % steps == 0)
+                plans = {plan.start_slot // plan.length: plan}
+                preview = KitCoordinator()
+                rows = {vid: [] for vid in self.plan_lanes}
+                for i in range(count):
+                    position = window_start + i
+                    cycle = position // plan.length
+                    if cycle not in plans:
+                        plans[cycle] = preview.plan(self.drum, self.host.project.seed, position * STEP_BEATS)
+                    for vid in rows:
+                        rows[vid].append(plans[cycle].at(vid, position))
+                self._plan_view_cache = (key, rows, groups, bar_starts)
+            _, rows, groups, bar_starts = self._plan_view_cache
             for voice_id, lane in self.plan_lanes.items():
                 if self.view_selector.currentData() == "output":
                     history = self.host.transport.drum_output_history.get(voice_id, {})
-                    absolute_bar = absolute_slot // steps * steps
-                    lane.set_output([history.get(absolute_bar + i) for i in range(steps)], cursor, plan.groups)
+                    lane.set_output([history.get(window_start + i) for i in range(count)], cursor, groups, bar_starts)
                 else:
-                    lane.set_plan([plan.at(voice_id, bar_start + i) for i in range(steps)],
-                                  cursor, plan.groups)
+                    lane.set_plan(rows[voice_id], cursor, groups, bar_starts)
         fill = any(plan.at(v.id, slot).fill for v in self.drum.drum_voices)
-        self.plan_status.setText(f"Bar {slot // steps + 1}/{plan.length // steps} · Step {slot % steps + 1:02d}/{steps}" + (" · FILL" if fill else ""))
+        self.plan_status.setText(f"View {self.pattern_offset + 1}–{self.pattern_offset + count} · Bar {slot // steps + 1}/{plan.length // steps} · Step {slot % steps + 1:02d}/{steps}" + (" · FILL" if fill else ""))
 
     def _add_voice(self):
         ensure_drum_voices(self.drum)
@@ -2993,14 +3162,22 @@ class DrumKitEditor(LayerGroup):
                 title_row.addWidget(title)
                 self.view_selector = QComboBox(); self.view_selector.setObjectName("kitView")
                 self.view_selector.addItem("Plan", "plan"); self.view_selector.addItem("Output", "output")
+                self.view_selector.addItem("Source", "source")
                 self.view_selector.setFixedWidth(76)
-                self.view_selector.setCurrentIndex(1 if getattr(self.host, "_kit_output_view", False) else 0)
-                self.view_selector.setToolTip("Plan: arrangement before processing. Output: accepted generated events after processing, probability and mute, even without a MIDI port. Grey = not visited, dash = rest, bar height = velocity. Coordinated voices only; this is not MIDI input feedback.")
+                self.view_selector.setCurrentIndex(2 if self.source_view or not coordinated(self.drum) else 1 if getattr(self.host, "_kit_output_view", False) else 0)
+                self.view_selector.setToolTip("All views follow global Length, up to 32 steps per page. Plan/Output retain Kit meter and phrase boundaries. Source edits the generator. Output includes processing, probability and mute; it is not MIDI input feedback.")
                 self.view_selector.currentIndexChanged.connect(self._view_changed)
                 title_row.addWidget(self.view_selector); title_row.addStretch(1)
+                self.page_selector = QComboBox()
+                self.page_selector.setObjectName("kitPatternPage")
+                self.page_selector.setAccessibleName("Drum pattern / plan page")
+                for start in range(0, self.pattern_length, DrumPatternLane.PAGE_SIZE):
+                    self.page_selector.addItem(f"{start + 1}–{min(start + DrumPatternLane.PAGE_SIZE, self.pattern_length)} / {self.pattern_length}")
+                self.page_selector.setCurrentIndex(self.pattern_page)
+                self.page_selector.currentIndexChanged.connect(self._pattern_page_changed)
+                title_row.addWidget(self.page_selector)
                 header_layout.addLayout(title_row)
                 self.plan_ruler = KitStepRuler()
-                self.plan_ruler.setVisible(coordinated(self.drum))
                 header_layout.addWidget(self.plan_ruler)
                 grid.addWidget(header, 0, column)
             else:
@@ -3035,20 +3212,19 @@ class DrumKitEditor(LayerGroup):
             base_note.valueChanged.connect(lambda value, v=voice: self._changed(v, "midi_note", value))
             grid.addWidget(base_note, row, 6)
             lane = QHBoxLayout(); lane.setContentsMargins(0, 0, 0, 0); lane.setSpacing(2)
-            if coordinated(self.drum, voice):
+            if coordinated(self.drum, voice) and not self.source_view:
                 plan_lane = KitPlanLane()
                 self.plan_lanes[voice.id] = plan_lane
                 lane.addWidget(plan_lane)
-            elif voice.mode == "LIVE":
+            elif voice.mode == "LIVE" and not coordinated(self.drum, voice):
                 stream = QLabel("LIVE STREAM  ·  Prob / Min / Max / Phase")
                 stream.setObjectName("muted"); lane.addWidget(stream)
             else:
                 values = self._voice_pattern(voice)
-                for index, value in enumerate(values):
-                    step = QPushButton(""); step.setCheckable(True); step.setChecked(value > 0); step.setFixedSize(14, 18)
-                    step.setToolTip(f"{voice.name} step {index + 1}")
-                    step.toggled.connect(lambda checked, v=voice, i=index: self._set_pattern(v, i, checked))
-                    lane.addWidget(step)
+                pattern_lane = DrumPatternLane(values[self.pattern_offset:self.pattern_offset + DrumPatternLane.PAGE_SIZE], self.pattern_offset, voice.name)
+                pattern_lane.step_toggled.connect(lambda index, checked, v=voice: self._set_pattern(v, index, checked))
+                self.pattern_lanes[voice.id] = pattern_lane
+                lane.addWidget(pattern_lane)
             cell = QWidget(); cell.setLayout(lane); grid.addWidget(cell, row, 7)
             output = QComboBox(); output.addItem("(none)")
             output.addItems(ports)
@@ -3069,6 +3245,7 @@ class DrumKitEditor(LayerGroup):
             role.currentIndexChanged.connect(lambda _, v=voice, w=role: self._changed(v, "kit_role", w.currentData()))
             grid.addWidget(role, row, 2)
         grid.setColumnStretch(7, 1)
+        self.page_selector.setVisible(bool(self.pattern_lanes or self.plan_lanes) and self.pattern_length > DrumPatternLane.PAGE_SIZE)
         outer.addLayout(grid)
 
         controls = QHBoxLayout(); controls.setSpacing(8)
@@ -3798,7 +3975,26 @@ class PianoRollWidget(QWidget):
         self.frozen_at = 0.0
         self.setMinimumHeight(190)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setMouseTracking(False)
+        self.setMouseTracking(True)
+        self._keyboard_geometry = None
+        self.setAccessibleName("MIDI piano roll; note labels use C4 = MIDI 60")
+
+    @staticmethod
+    def note_label(note):
+        return f"{NOTE_NAMES[int(note) % 12]}{int(note) // 12 - 1}"
+
+    def _keyboard_note_at(self, position):
+        if self._keyboard_geometry is None:
+            return None
+        lo, hi, top, height, right = self._keyboard_geometry
+        if 3 <= position.x() <= right and top <= position.y() < top + height:
+            return hi - int((position.y() - top) * (hi - lo + 1) / height)
+        return None
+
+    def mouseMoveEvent(self, event):
+        note = self._keyboard_note_at(event.position())
+        self.setToolTip(f"{self.note_label(note)} · MIDI {note}" if note is not None else "")
+        super().mouseMoveEvent(event)
 
     def set_data(self, block, history=None, pattern_seconds=None, seq_interval=None, running=False, project=None):
         if project is not None:
@@ -3912,19 +4108,29 @@ class PianoRollWidget(QWidget):
             generated = self._generated_events()
             notes = [e[1] for e in generated]
 
-        if not notes:
-            p.setPen(pal.mid().color())
-            p.drawText(left, top + 25, "No generated MIDI notes yet")
-            p.end()
-            return
-
-        lo = max(0, min(notes) - 2)
-        hi = min(127, max(notes) + 2)
-        span = max(1, hi - lo)
+        if notes:
+            lo = max(0, min(notes) - 2)
+            hi = min(127, max(notes) + 2)
+        else:
+            center = max(0, min(127, int(getattr(self.block, "midi_note", 60))))
+            lo, hi = max(0, center - 6), min(127, center + 6)
+        # Include both endpoint keys so the highest row stays inside the plot.
+        span = max(1, hi - lo + 1)
 
         # Pitch grid + compact piano keyboard.
         white_names = {0, 2, 4, 5, 7, 9, 11}
         key_left, key_right = 3, left - 5
+        self._keyboard_geometry = (lo, hi, top, h, key_right)
+        font = p.font()
+        label_font = p.font(); label_font.setPixelSize(max(8, min(11, int(h / span) - 2)))
+        p.setFont(label_font)
+        label_height = p.fontMetrics().height()
+        label_notes = []
+        # Dense ranges prioritise sounding notes and octave markers instead
+        # of overlapping labels. Every key also has its full name on hover.
+        for note in sorted(range(lo, hi + 1), key=lambda n: (n not in notes, n % 12 != 0, n)):
+            if all(abs(note - other) * h / span >= label_height for other in label_notes):
+                label_notes.append(note)
         for note in range(hi, lo - 1, -1):
             y0 = top + h - (note - lo + 1) / span * h
             y1 = top + h - (note - lo) / span * h
@@ -3933,24 +4139,16 @@ class PianoRollWidget(QWidget):
             p.setPen(QPen(QColor("#66707c"), 1))
             p.setBrush(QBrush(QColor("#e8ebef") if is_white else QColor("#242a31")))
             p.drawRect(key_rect)
-            if note % 12 in (0,):
-                p.setPen(QPen(QColor("#555f6b"), 1))
-                p.drawLine(left, int(y1), left + w, int(y1))
-                p.setPen(QPen(fg, 1))
-                p.drawText(key_left + 2, int((y0+y1)/2 + 4), f"C{note // 12 - 1}")
-            else:
-                p.setPen(QPen(grid, 1))
-                p.drawLine(left, int(y1), left + w, int(y1))
-        # Black keys are inset to the right edge of the keyboard.
-        black_names = {1, 3, 6, 8, 10}
-        for note in range(hi, lo - 1, -1):
-            if note % 12 not in black_names:
-                continue
-            y0 = top + h - (note - lo + 1) / span * h
-            y1 = top + h - (note - lo) / span * h
-            kh = max(2.0, (y1-y0)*0.68)
-            kr = QRectF(key_left, y0, (key_right-key_left)*0.62, kh)
-            p.setPen(QPen(QColor("#0d1116"), 1)); p.setBrush(QBrush(QColor("#171c22"))); p.drawRoundedRect(kr, 2, 2)
+            if note in label_notes:
+                p.setPen(QColor("#26313d") if is_white else QColor("#edf2f7"))
+                text_rect = QRectF(key_left + 3, (y0 + y1 - label_height) / 2, key_right - key_left - 6, label_height)
+                p.drawText(text_rect, Qt.AlignVCenter | Qt.AlignRight, self.note_label(note))
+            p.setPen(QPen(QColor("#555f6b") if note % 12 == 0 else grid, 1))
+            p.drawLine(left, int(y1), left + w, int(y1))
+        p.setFont(font)
+        if not notes:
+            p.setPen(grid)
+            p.drawText(left + 8, top + 25, "No generated MIDI notes yet")
 
         # Time grid: one line per musical step and a stronger line per pattern.
         if use_history:
@@ -6049,6 +6247,13 @@ class MainWindow(QMainWindow):
         may also outlive selection/page changes. Never retain a native widget
         wrapper across rebuilds or update a preview for a different entity.
         """
+        # Update the pinned source lane in place after generation, including
+        # edits to voices that are not currently selected in the Inspector.
+        kit_layout = getattr(self, "drum_kit_layout", None)
+        if block is not None and kit_layout is not None and kit_layout.count():
+            kit = kit_layout.itemAt(0).widget()
+            if kit is not None and isValid(kit) and getattr(block, "parent_id", None) == kit.drum.id:
+                kit.refresh_pattern(block)
         if block is None or self._selected_inspector_entity() is not block:
             return
         scroll = getattr(self, "inspector_scroll", None)
@@ -6185,9 +6390,11 @@ class MainWindow(QMainWindow):
         self._mark_dirty()
 
     def _length_changed(self, value):
-        self.project.length = int(value)
+        with self.transport._state_lock:
+            self.project.length = int(value)
+            self.engine.generate()
         self._mark_dirty()
-        self.engine.generate(); self._queue_inspector_refresh("SOURCE")
+        self._queue_inspector_refresh("SOURCE")
 
     def _unique_block_name(self, role):
         """Create a readable unique block name from its musical role."""

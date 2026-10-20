@@ -965,7 +965,7 @@ class MusicEngine:
             representation.duration[i] = gate if hit else 0.0
             representation.accent[i] = float(hit and velocity >= .85)
 
-    def _apply_global_macros(self, block: Block, representation):
+    def _apply_global_macros(self, block: Block, representation, start_slot=0):
         """Apply the always-visible global character controls.
 
         The midpoint is deliberately neutral, so existing projects keep their
@@ -984,14 +984,18 @@ class MusicEngine:
         for i, hit in enumerate(representation.rhythm):
             if hit <= 0:
                 continue
-            if keep < .999 and self.director.decision_value(block.id, "global_density", slot=i) > keep:
+            # A LIVE representation contains one event, so its local index is
+            # always zero. Reusing that decision silenced entire voices when
+            # Global Density was lowered, even after New variant.
+            slot = start_slot + i
+            if keep < .999 and self.director.decision_value(block.id, "global_density", slot=slot) > keep:
                 representation.rhythm[i] = 0.0
                 representation.velocity[i] = 0.0
                 representation.duration[i] = 0.0
                 continue
             representation.velocity[i] = _clamp(representation.velocity[i] * energy_scale, 0.0, 1.0)
             if abs(variation - .5) > 1e-9:
-                direction = 1.0 if (i % (2 if role in PERCUSSIVE_TYPES else 3) == 0) else -1.0
+                direction = 1.0 if (slot % (2 if role in PERCUSSIVE_TYPES else 3) == 0) else -1.0
                 depth = (variation - .5) * (.32 if role in PERCUSSIVE_TYPES else .20)
                 representation.velocity[i] = _clamp(representation.velocity[i] * (1.0 + direction * depth), 0.0, 1.0)
 
@@ -1030,7 +1034,7 @@ class MusicEngine:
         if str(block.block_type).upper() not in ("DRUM", "CHORD"):
             self.update_musical_context()
         self._apply_groove_to_representation(block, representation)  # same stage as LIVE
-        self._apply_global_macros(block, representation)
+        self._apply_global_macros(block, representation, plan.start_slot if plan is not None else 0)
         snap = self.director.snapshot()
         if self.director.phrase.running:
             role = str(block.block_type).upper()
@@ -1746,7 +1750,7 @@ class MusicEngine:
         # LIVE events must receive the same always-visible character controls
         # as SEQ material.  Previously energy/density/variation only affected
         # generate_block(), so header macros appeared inert during LIVE play.
-        self._apply_global_macros(block, representation)
+        self._apply_global_macros(block, representation, kit_index)
         if self.director.phrase.running:
             snap=self.director.snapshot()
             role=str(block.block_type).upper()
