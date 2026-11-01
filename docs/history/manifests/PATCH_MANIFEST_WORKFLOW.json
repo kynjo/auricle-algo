@@ -1,0 +1,79 @@
+{
+  "release": "v111 Kit workflow: Output, Step chance, Copy/Paste",
+  "date": "2026-10-18",
+  "base_archive": "auricle_algorithmic_midi_v111_kit_variations_patch.zip",
+  "changed_and_new_only": true,
+  "verification": {
+    "full_suite": "734 passed",
+    "final_UI_and_workflow_followup": "24 passed",
+    "UI": "Qt 1280x900"
+  },
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "e61e5b949074094e5ff365fdaaa312b9e015d2eea52cb6406204dcfaa0b1d8d8",
+      "previous_sha256": "3e606b4bc0667855c94f82991730e188bd7e39f9eb556bbca112f4b6ac307db5",
+      "bytes": 23324
+    },
+    {
+      "path": "README.md",
+      "sha256": "d50572ef9ff94b321473cf2544041e7d4381893bca3c42fef4d557eceee3a111",
+      "previous_sha256": "41160203a3d505690235c0112726f6c1f331d3866fd8bd091a3b365f89750f89",
+      "bytes": 8019
+    },
+    {
+      "path": "auricle_catalogs.py",
+      "sha256": "92e3d034575bc371da73980d0f6dbf3619c1d1964abfb5d487b8f137a8224d28",
+      "previous_sha256": "6ef0c3e037625e587aef59c1306727d764850caf98df3185fd11eeb7611e8db3",
+      "bytes": 9756
+    },
+    {
+      "path": "auricle_engine.py",
+      "sha256": "27e82bfc866051832734ac28650c60f385150f35b27e170d526f0a4c09c283e8",
+      "previous_sha256": "704a8f6bfd61ef4174db9b7245a533c2660d6310009d792c189918d108559d95",
+      "bytes": 118372
+    },
+    {
+      "path": "auricle_gui.py",
+      "sha256": "c404d39a1ba90d33d12579995b924c70f6cec4db1a14f63cbb6b0f841c2ef50e",
+      "previous_sha256": "19515c43005e7115e9be28c347f4cd852833aa651ced8a1bc61163c7820ef311",
+      "bytes": 316550
+    },
+    {
+      "path": "auricle_transport.py",
+      "sha256": "4a0284f000ca2bf45e6d0352a35024b8e6572015000d5f9c5f8358a29d4b25b4",
+      "previous_sha256": "152cfe2cecb14a51b1504adf824249c7ae169a568359659e0896a2f47df1a244",
+      "bytes": 39546
+    },
+    {
+      "path": "docs/KIT_WORKFLOW_RU.md",
+      "sha256": "6e073858944840aac2ae61919a258fcdee9ffbaa583eaf06eba47d14602dfa34",
+      "previous_sha256": null,
+      "bytes": 9406
+    },
+    {
+      "path": "drum_editing.py",
+      "sha256": "5886bfe6b22f6e21ef4ccc7e59d0c43cd6c241702dfc906da8bbbae551164963",
+      "previous_sha256": null,
+      "bytes": 647
+    },
+    {
+      "path": "examples/drum_output_chance_demo.json",
+      "sha256": "5c44d83237d4d922a675319e6858f09285dc6297343cf8440255981ac25ec79f",
+      "previous_sha256": null,
+      "bytes": 9655
+    },
+    {
+      "path": "pattern_chance.py",
+      "sha256": "bb845f3dac660e1071f5bf55d2f3480db785c90613b27de1c692202eb800c8bf",
+      "previous_sha256": null,
+      "bytes": 1323
+    },
+    {
+      "path": "tests/test_kit_workflow.py",
+      "sha256": "98a8553f21a0615e57e71fec577a33158754556fd78fd561f6d0b62cc8f50958",
+      "previous_sha256": null,
+      "bytes": 10244
+    }
+  ]
+}

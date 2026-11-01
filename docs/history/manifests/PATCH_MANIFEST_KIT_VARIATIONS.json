@@ -1,0 +1,91 @@
+{
+  "release": "v111 Drum Kit meters and variations",
+  "date": "2026-10-18",
+  "base_archive": "auricle_algorithmic_midi_v111_kit_stage3_fix.zip",
+  "changed_and_new_only": true,
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "3e606b4bc0667855c94f82991730e188bd7e39f9eb556bbca112f4b6ac307db5",
+      "previous_sha256": "e6a9f33b3b05ec422d8c6a0e60c004b8fc8351ce84f9b0a1a7097da8b66c86da",
+      "bytes": 22541
+    },
+    {
+      "path": "README.md",
+      "sha256": "41160203a3d505690235c0112726f6c1f331d3866fd8bd091a3b365f89750f89",
+      "previous_sha256": "b4579b030035aa7387bdb60f48d904fdde3c65d665039c53d31bb5f2d88aa47b",
+      "bytes": 7321
+    },
+    {
+      "path": "auricle_catalogs.py",
+      "sha256": "6ef0c3e037625e587aef59c1306727d764850caf98df3185fd11eeb7611e8db3",
+      "previous_sha256": "535efc9877027df24ae4e3e6174b86f78793afd3c09410ecfff8895a90d6e970",
+      "bytes": 9728
+    },
+    {
+      "path": "auricle_engine.py",
+      "sha256": "704a8f6bfd61ef4174db9b7245a533c2660d6310009d792c189918d108559d95",
+      "previous_sha256": "3a2f08aca0b5f40f4fc4f8b9fdeb9da8743e0bb9051067bd321d9d1a24dd00e0",
+      "bytes": 117542
+    },
+    {
+      "path": "auricle_gui.py",
+      "sha256": "19515c43005e7115e9be28c347f4cd852833aa651ced8a1bc61163c7820ef311",
+      "previous_sha256": "4801143c4606544ab95422c5fe6d121ccbd1ce4e9fb6ceacce58545f0e234efd",
+      "bytes": 306332
+    },
+    {
+      "path": "auricle_transport.py",
+      "sha256": "152cfe2cecb14a51b1504adf824249c7ae169a568359659e0896a2f47df1a244",
+      "previous_sha256": "2db9925fbbc87a6a66651d4ba61c88fb66c1fd23b64dbe3f666ea55a9a035a60",
+      "bytes": 38453
+    },
+    {
+      "path": "coordinated_kit.py",
+      "sha256": "35ad5db1ca220e45582cad616b799be833bf273292fe70064eb805a901803270",
+      "previous_sha256": "3844aa35c96b560a35f8f7df365e6cc383c34e89f6bf5302defbd02a2e0e6791",
+      "bytes": 10480
+    },
+    {
+      "path": "docs/DRUM_KIT_STAGE3_RU.md",
+      "sha256": "5ef5a9d0beec9d7639f224d7d98924b5b0fe5257627abdd4b479a32688737d50",
+      "previous_sha256": "20c9868b99cbcf22644b1f26479f300425433f793fc09ce64428ac2e92c1812f",
+      "bytes": 11619
+    },
+    {
+      "path": "docs/DRUM_KIT_VARIATIONS_RU.md",
+      "sha256": "1fe959a1aeb756c41fdf38bbd01305060faad297b09fb7e87e8f67cdd514775c",
+      "previous_sha256": null,
+      "bytes": 10553
+    },
+    {
+      "path": "examples/drum_variations_7_8.json",
+      "sha256": "ac2f1a05a53ca66375a0069392c2ff6290ba1ceb50161cc240e7ce6815988e51",
+      "previous_sha256": null,
+      "bytes": 54718
+    },
+    {
+      "path": "tests/test_coordinated_kit.py",
+      "sha256": "0cc174de1775386391238272f2e3b0e8c9c4bf2cf910e86ee81b7fd93041b500",
+      "previous_sha256": "96e06b012e97c4eae46c7b3a4daa106b874cdeab01e887c49ada93ee7f0f609b",
+      "bytes": 14205
+    },
+    {
+      "path": "tests/test_kit_groove_fix.py",
+      "sha256": "da987758351b52a05e0d19e08b6a21c00456ae2f956157f1bdf695672a6184be",
+      "previous_sha256": "8e5ce155900ab9217d72d989546274aa0dd35b23be6e7316f563265a52f20b34",
+      "bytes": 5768
+    },
+    {
+      "path": "tests/test_kit_variations.py",
+      "sha256": "5d1630bb2c1247b14e822d32e9488186515aa55280741742f056d3424925621e",
+      "previous_sha256": null,
+      "bytes": 14803
+    }
+  ],
+  "verification": {
+    "full_suite_before_final_followups": "701 passed",
+    "modulation_density_followup": "216 passed",
+    "final_kit_regression_suite": "157 passed after final Keep beat fix"
+  }
+}

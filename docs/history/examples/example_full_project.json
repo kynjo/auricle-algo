@@ -1,0 +1,724 @@
+{
+  "tempo": 112,
+  "length": 16,
+  "seed": 48271,
+  "root_note": 0,
+  "scale": "Minor",
+  "blocks": [
+    {
+      "id": 1,
+      "name": "Kick",
+      "block_type": "DRUM",
+      "algorithm": "Euclidean",
+      "mode": "SEQ",
+      "midi_channel": 10,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 36,
+      "parameters": {
+        "steps": 16,
+        "pulses": 5,
+        "rotation": 0,
+        "fill_density": 0.92,
+        "event_probability": 1.0
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "pitch": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "velocity": [
+          0.0,
+          0.0,
+          0.0,
+          0.9208333333333334,
+          0.0,
+          0.0,
+          0.9208333333333334,
+          0.0,
+          0.0,
+          0.9208333333333334,
+          0.0,
+          0.0,
+          0.9208333333333334,
+          0.0,
+          0.0,
+          0.9208333333333334
+        ],
+        "duration": [
+          0.0,
+          0.0,
+          0.0,
+          0.78,
+          0.0,
+          0.0,
+          0.78,
+          0.0,
+          0.0,
+          0.78,
+          0.0,
+          0.0,
+          0.78,
+          0.0,
+          0.0,
+          0.78
+        ],
+        "density": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "accent": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "color": ""
+    },
+    {
+      "id": 2,
+      "name": "Percussion",
+      "block_type": "PERCUSSION",
+      "algorithm": "Polyrhythm",
+      "mode": "SEQ",
+      "midi_channel": 10,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 42,
+      "parameters": {
+        "steps": 16,
+        "voices": 2,
+        "rotation": 3,
+        "fill_density": 0.48,
+        "event_probability": 0.82
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "pitch": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "velocity": [
+          0.0,
+          0.0,
+          0.0,
+          0.9208333333333334,
+          0.9208333333333334,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "duration": [
+          0.0,
+          0.0,
+          0.0,
+          0.78,
+          0.78,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "density": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "accent": [
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "color": ""
+    },
+    {
+      "id": 3,
+      "name": "Bass",
+      "block_type": "BASS",
+      "algorithm": "Weighted Scale",
+      "mode": "SEQ",
+      "midi_channel": 1,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 38,
+      "parameters": {
+        "scale": "Dorian",
+        "root": 2,
+        "range": 12,
+        "step": 2,
+        "octave": 0,
+        "fill_density": 0.72,
+        "event_probability": 0.94,
+        "scale_name": "Minor",
+        "scale_root": 0
+      },
+      "mutators": [
+        {
+          "name": "Octave",
+          "amount": 0,
+          "target": "pitch"
+        },
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Mutate",
+          "amount": 0.773,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "pitch": [
+          -20.0,
+          -23.0,
+          -18.0,
+          -22.0,
+          -16.0,
+          -17.0,
+          -15.0,
+          -17.0,
+          -19.0,
+          -16.0,
+          -12.0,
+          -20.0,
+          -17.0,
+          -21.0,
+          -19.0,
+          -5.0
+        ],
+        "velocity": [
+          0.9416666666666667,
+          0.9624999999999999,
+          1.0,
+          0.9624999999999999,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.9624999999999999,
+          1.0,
+          0.9624999999999999,
+          1.0,
+          0.0
+        ],
+        "duration": [
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.0,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.78,
+          0.0
+        ],
+        "density": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ],
+        "accent": [
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          1.0,
+          0.0
+        ]
+      },
+      "color": ""
+    },
+    {
+      "id": 4,
+      "name": "Melody",
+      "block_type": "MELODY",
+      "algorithm": "Markov",
+      "mode": "LIVE",
+      "midi_channel": 2,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 74,
+      "parameters": {
+        "scale": "Dorian",
+        "root": 2,
+        "range": 19,
+        "memory": 2,
+        "step": 2,
+        "fill_density": 0.58,
+        "event_probability": 0.78,
+        "scale_root": 0,
+        "scale_name": "Minor"
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0
+        ],
+        "pitch": [
+          -4.0
+        ],
+        "velocity": [
+          0.8489039671492138
+        ],
+        "duration": [
+          0.65
+        ],
+        "density": [
+          1.0
+        ],
+        "accent": [
+          0.0
+        ]
+      },
+      "color": ""
+    },
+    {
+      "id": 5,
+      "name": "Chords",
+      "block_type": "CHORD",
+      "algorithm": "Arpeggiator",
+      "mode": "SEQ",
+      "midi_channel": 3,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 62,
+      "parameters": {
+        "scale": "Dorian",
+        "root": 2,
+        "range": 12,
+        "step": 3,
+        "direction": 1,
+        "fill_density": 0.38,
+        "event_probability": 0.86,
+        "scale_root": 0,
+        "scale_name": "Minor"
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "pitch": [
+          0.0,
+          3.0,
+          7.0,
+          10.0,
+          12.0,
+          15.0,
+          19.0,
+          22.0,
+          0.0,
+          3.0,
+          7.0,
+          10.0,
+          12.0,
+          15.0,
+          19.0,
+          22.0
+        ],
+        "velocity": [
+          0.72,
+          0.9624999999999999,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "duration": [
+          0.78,
+          0.78,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.78,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.78
+        ],
+        "density": [
+          1.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "accent": [
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ]
+      },
+      "color": ""
+    },
+    {
+      "id": 6,
+      "name": "Pad",
+      "block_type": "PAD",
+      "algorithm": "Pattern",
+      "mode": "LIVE",
+      "midi_channel": 4,
+      "midi_port": "Client-128:Virtual RawMIDI 128:0",
+      "midi_note": 62,
+      "parameters": {
+        "length": 8,
+        "density": 0.25,
+        "fill_density": 0.28,
+        "event_probability": 0.9
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "outputs": {
+        "rhythm": [
+          1.0
+        ],
+        "pitch": [
+          0.0
+        ],
+        "velocity": [
+          0.8397712667124271
+        ],
+        "duration": [
+          0.65
+        ],
+        "density": [
+          1.0
+        ],
+        "accent": [
+          0.0
+        ]
+      },
+      "color": ""
+    }
+  ],
+  "relations": [],
+  "block_colors": {},
+  "macros": []
+}

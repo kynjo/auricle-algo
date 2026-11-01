@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package dist/Auricle using the original PNG artwork; no ImageMagick is needed.
+# Package dist/Auricle using the shared SVG artwork; no ImageMagick is needed.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ARCH="${ARCH:-$(uname -m)}"
@@ -22,11 +22,17 @@ if [ ! -x "$APPIMAGETOOL" ]; then
 fi
 VERSION="$("${PYTHON:-python3}" -c 'from version import APP_VERSION; print(APP_VERSION)')"
 rm -rf "$APPDIR"
-mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/512x512/apps" "$OUT_DIR"
+mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/512x512/apps" "$APPDIR/usr/share/icons/hicolor/scalable/apps" "$OUT_DIR"
 cp -R dist/Auricle/. "$APPDIR/usr/bin/"
+ICON_PYTHON="${PYTHON:-}"
+if [ -z "$ICON_PYTHON" ]; then
+  if [ -x .venv-build/bin/python ]; then ICON_PYTHON=.venv-build/bin/python; else ICON_PYTHON=python3; fi
+fi
+"$ICON_PYTHON" packaging/render_icons.py
 cp assets/auricle_icon.png "$APPDIR/auricle.png"
 cp assets/auricle_icon.png "$APPDIR/.DirIcon"
 cp assets/auricle_icon.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/auricle.png"
+cp assets/auricle_logo.svg "$APPDIR/usr/share/icons/hicolor/scalable/apps/auricle.svg"
 cat > "$APPDIR/auricle.desktop" <<'DESKTOP'
 [Desktop Entry]
 Type=Application

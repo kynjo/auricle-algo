@@ -1,0 +1,1615 @@
+{
+  "tempo": 110,
+  "length": 32,
+  "seed": 240114,
+  "root_note": 62,
+  "scale": "Dorian",
+  "block_colors": {},
+  "macros": [
+    {
+      "name": "Energy",
+      "control": "energy",
+      "value": 0.62,
+      "routes": []
+    },
+    {
+      "name": "Tension",
+      "control": "tension",
+      "value": 0.58,
+      "routes": []
+    },
+    {
+      "name": "Density",
+      "control": "density",
+      "value": 0.68,
+      "routes": []
+    },
+    {
+      "name": "Variation",
+      "control": "variation",
+      "value": 0.55,
+      "routes": []
+    }
+  ],
+  "performance": {
+    "1": {
+      "preset_id": "euclidean_fill",
+      "amount": 0.38,
+      "shape": "in",
+      "beats": 4,
+      "enabled": false
+    },
+    "2": {
+      "preset_id": "stringendo",
+      "amount": 0.34,
+      "shape": "in",
+      "beats": 4,
+      "enabled": false
+    },
+    "3": {
+      "preset_id": "tenuto",
+      "amount": 0.3,
+      "shape": "in",
+      "beats": 2,
+      "enabled": false
+    },
+    "4": {
+      "preset_id": "rubato",
+      "amount": 0.26,
+      "shape": "pulse",
+      "beats": 8,
+      "enabled": false
+    },
+    "5": {
+      "preset_id": "markov_unstable",
+      "amount": 0.32,
+      "shape": "in",
+      "beats": 8,
+      "enabled": false
+    }
+  },
+  "motifs": {},
+  "harmonic_plan": {
+    "enabled": true,
+    "meter": "4/4",
+    "loop": true,
+    "chords": [
+      {
+        "root": 2,
+        "quality": "minor",
+        "bars": 1
+      },
+      {
+        "root": 7,
+        "quality": "major",
+        "bars": 1
+      },
+      {
+        "root": 0,
+        "quality": "major",
+        "bars": 1
+      },
+      {
+        "root": 5,
+        "quality": "major",
+        "bars": 1
+      }
+    ]
+  },
+  "parameter_policies": {},
+  "composition": {
+    "enabled": true,
+    "meter": "4/4",
+    "loop": false,
+    "sections": [
+      {
+        "id": "curves-intro",
+        "type": "Intro",
+        "name": "Intro",
+        "bars": 4,
+        "macros": {
+          "energy": 0.48,
+          "tension": 0.35,
+          "density": 0.3,
+          "variation": 0.25
+        },
+        "blocks": {
+          "-101": {
+            "enabled": true,
+            "density": 0.55,
+            "velocity": 0.76,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-102": {
+            "enabled": true,
+            "density": 0.55,
+            "velocity": 0.76,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-103": {
+            "enabled": true,
+            "density": 0.42,
+            "velocity": 0.68,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-104": {
+            "enabled": true,
+            "density": 0.42,
+            "velocity": 0.68,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-105": {
+            "enabled": true,
+            "density": 0.55,
+            "velocity": 0.76,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-106": {
+            "enabled": true,
+            "density": 0.42,
+            "velocity": 0.68,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "2": {
+            "enabled": true,
+            "density": 0.68,
+            "velocity": 0.8,
+            "variation": 0.08,
+            "gate": 0.85,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.2,
+            "register_center": 0.0
+          },
+          "3": {
+            "enabled": true,
+            "density": 0.68,
+            "velocity": 0.78,
+            "variation": 0.06,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "4": {
+            "enabled": true,
+            "density": 0.9,
+            "velocity": 0.82,
+            "variation": 0.04,
+            "gate": 1.2,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "5": {
+            "enabled": true,
+            "density": 0.48,
+            "velocity": 0.82,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.05,
+            "harmony": 1.15,
+            "register_center": 0.0
+          }
+        },
+        "macro_curves": {
+          "energy": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.26
+              ],
+              [
+                0.65,
+                0.392
+              ],
+              [
+                1.0,
+                0.48
+              ]
+            ]
+          },
+          "tension": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.2
+              ],
+              [
+                0.65,
+                0.29
+              ],
+              [
+                1.0,
+                0.35
+              ]
+            ]
+          },
+          "density": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.18
+              ],
+              [
+                0.65,
+                0.252
+              ],
+              [
+                1.0,
+                0.3
+              ]
+            ]
+          },
+          "variation": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.15
+              ],
+              [
+                0.65,
+                0.21
+              ],
+              [
+                1.0,
+                0.25
+              ]
+            ]
+          }
+        },
+        "transition_bars": 0.5
+      },
+      {
+        "id": "curves-build",
+        "type": "Build",
+        "name": "Build",
+        "bars": 4,
+        "macros": {
+          "energy": 0.94,
+          "tension": 0.85,
+          "density": 0.5,
+          "variation": 0.75
+        },
+        "blocks": {
+          "-101": {
+            "enabled": true,
+            "density": 0.92,
+            "velocity": 0.96,
+            "variation": 0.28,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-102": {
+            "enabled": true,
+            "density": 0.92,
+            "velocity": 0.96,
+            "variation": 0.28,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-103": {
+            "enabled": true,
+            "density": 0.84,
+            "velocity": 0.9,
+            "variation": 0.3,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-104": {
+            "enabled": true,
+            "density": 0.84,
+            "velocity": 0.9,
+            "variation": 0.3,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-105": {
+            "enabled": true,
+            "density": 0.92,
+            "velocity": 0.96,
+            "variation": 0.28,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-106": {
+            "enabled": true,
+            "density": 0.84,
+            "velocity": 0.9,
+            "variation": 0.3,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "2": {
+            "enabled": true,
+            "density": 0.82,
+            "velocity": 0.94,
+            "variation": 0.2,
+            "gate": 0.85,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.2,
+            "register_center": 0.0
+          },
+          "3": {
+            "enabled": true,
+            "density": 0.76,
+            "velocity": 0.88,
+            "variation": 0.16,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "4": {
+            "enabled": true,
+            "density": 0.66,
+            "velocity": 0.82,
+            "variation": 0.12,
+            "gate": 1.2,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "5": {
+            "enabled": true,
+            "density": 0.86,
+            "velocity": 0.94,
+            "variation": 0.26,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.25,
+            "harmony": 0.7,
+            "register_center": 0.0
+          }
+        },
+        "macro_curves": {
+          "energy": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.48
+              ],
+              [
+                0.65,
+                0.756
+              ],
+              [
+                1.0,
+                0.94
+              ]
+            ]
+          },
+          "tension": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.35
+              ],
+              [
+                0.65,
+                0.6499999999999999
+              ],
+              [
+                1.0,
+                0.85
+              ]
+            ]
+          },
+          "density": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.3
+              ],
+              [
+                0.65,
+                0.42
+              ],
+              [
+                1.0,
+                0.5
+              ]
+            ]
+          },
+          "variation": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.25
+              ],
+              [
+                0.65,
+                0.55
+              ],
+              [
+                1.0,
+                0.75
+              ]
+            ]
+          }
+        },
+        "transition_bars": 0.5
+      },
+      {
+        "id": "curves-drop",
+        "type": "Drop",
+        "name": "Drop",
+        "bars": 8,
+        "macros": {
+          "energy": 0.82,
+          "tension": 0.55,
+          "density": 0.65,
+          "variation": 0.4
+        },
+        "blocks": {
+          "-101": {
+            "enabled": true,
+            "density": 1.0,
+            "velocity": 1.0,
+            "variation": 0.22,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-102": {
+            "enabled": true,
+            "density": 1.0,
+            "velocity": 1.0,
+            "variation": 0.22,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-103": {
+            "enabled": true,
+            "density": 0.94,
+            "velocity": 0.94,
+            "variation": 0.26,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-104": {
+            "enabled": true,
+            "density": 0.94,
+            "velocity": 0.94,
+            "variation": 0.26,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-105": {
+            "enabled": true,
+            "density": 1.0,
+            "velocity": 1.0,
+            "variation": 0.22,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-106": {
+            "enabled": true,
+            "density": 0.94,
+            "velocity": 0.94,
+            "variation": 0.26,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "2": {
+            "enabled": true,
+            "density": 0.98,
+            "velocity": 1.0,
+            "variation": 0.18,
+            "gate": 0.85,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.2,
+            "register_center": 0.0
+          },
+          "3": {
+            "enabled": true,
+            "density": 0.86,
+            "velocity": 0.9,
+            "variation": 0.14,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 12.0
+          },
+          "4": {
+            "enabled": true,
+            "density": 0.56,
+            "velocity": 0.78,
+            "variation": 0.1,
+            "gate": 1.2,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 12.0
+          },
+          "5": {
+            "enabled": true,
+            "density": 0.92,
+            "velocity": 0.96,
+            "variation": 0.22,
+            "gate": 0.7,
+            "accent": 0.15,
+            "octave_spread": 0.25,
+            "harmony": 1.15,
+            "register_center": 12.0
+          }
+        },
+        "macro_curves": {
+          "energy": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.94
+              ],
+              [
+                0.65,
+                0.868
+              ],
+              [
+                1.0,
+                0.82
+              ]
+            ]
+          },
+          "tension": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.7
+              ],
+              [
+                0.65,
+                0.61
+              ],
+              [
+                1.0,
+                0.55
+              ]
+            ]
+          },
+          "density": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.55
+              ],
+              [
+                0.65,
+                0.61
+              ],
+              [
+                1.0,
+                0.65
+              ]
+            ]
+          },
+          "variation": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.65
+              ],
+              [
+                0.65,
+                0.5
+              ],
+              [
+                1.0,
+                0.4
+              ]
+            ]
+          }
+        },
+        "transition_bars": 0.25
+      },
+      {
+        "id": "curves-break",
+        "type": "Break",
+        "name": "Break",
+        "bars": 4,
+        "macros": {
+          "energy": 0.52,
+          "tension": 0.6,
+          "density": 0.3,
+          "variation": 0.5
+        },
+        "blocks": {
+          "-101": {
+            "enabled": true,
+            "density": 0.2,
+            "velocity": 0.72,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-102": {
+            "enabled": true,
+            "density": 0.2,
+            "velocity": 0.72,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-103": {
+            "enabled": true,
+            "density": 0.22,
+            "velocity": 0.66,
+            "variation": 0.14,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-104": {
+            "enabled": true,
+            "density": 0.22,
+            "velocity": 0.66,
+            "variation": 0.14,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-105": {
+            "enabled": true,
+            "density": 0.2,
+            "velocity": 0.72,
+            "variation": 0.12,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-106": {
+            "enabled": true,
+            "density": 0.22,
+            "velocity": 0.66,
+            "variation": 0.14,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "2": {
+            "enabled": true,
+            "density": 0.42,
+            "velocity": 0.78,
+            "variation": 0.1,
+            "gate": 0.85,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.2,
+            "register_center": 0.0
+          },
+          "3": {
+            "enabled": true,
+            "density": 0.62,
+            "velocity": 0.8,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": -12.0
+          },
+          "4": {
+            "enabled": true,
+            "density": 0.86,
+            "velocity": 0.86,
+            "variation": 0.08,
+            "gate": 1.2,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": -12.0
+          },
+          "5": {
+            "enabled": true,
+            "density": 0.74,
+            "velocity": 0.88,
+            "variation": 0.18,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.05,
+            "harmony": 1.15,
+            "register_center": -12.0
+          }
+        },
+        "macro_curves": {
+          "energy": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.4
+              ],
+              [
+                0.65,
+                0.47200000000000003
+              ],
+              [
+                1.0,
+                0.52
+              ]
+            ]
+          },
+          "tension": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.45
+              ],
+              [
+                0.65,
+                0.54
+              ],
+              [
+                1.0,
+                0.6
+              ]
+            ]
+          },
+          "density": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.18
+              ],
+              [
+                0.65,
+                0.252
+              ],
+              [
+                1.0,
+                0.3
+              ]
+            ]
+          },
+          "variation": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.3
+              ],
+              [
+                0.65,
+                0.42
+              ],
+              [
+                1.0,
+                0.5
+              ]
+            ]
+          }
+        },
+        "transition_bars": 0.25
+      },
+      {
+        "id": "curves-outro",
+        "type": "Outro",
+        "name": "Outro",
+        "bars": 4,
+        "macros": {
+          "energy": 0.2,
+          "tension": 0.2,
+          "density": 0.12,
+          "variation": 0.15
+        },
+        "blocks": {
+          "-101": {
+            "enabled": true,
+            "density": 0.36,
+            "velocity": 0.78,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-102": {
+            "enabled": true,
+            "density": 0.36,
+            "velocity": 0.78,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-103": {
+            "enabled": true,
+            "density": 0.3,
+            "velocity": 0.7,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-104": {
+            "enabled": true,
+            "density": 0.3,
+            "velocity": 0.7,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-105": {
+            "enabled": true,
+            "density": 0.36,
+            "velocity": 0.78,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "-106": {
+            "enabled": true,
+            "density": 0.3,
+            "velocity": 0.7,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.2,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "2": {
+            "enabled": true,
+            "density": 0.48,
+            "velocity": 0.82,
+            "variation": 0.08,
+            "gate": 0.85,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.2,
+            "register_center": 0.0
+          },
+          "3": {
+            "enabled": true,
+            "density": 0.62,
+            "velocity": 0.82,
+            "variation": 0.06,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "4": {
+            "enabled": true,
+            "density": 0.82,
+            "velocity": 0.84,
+            "variation": 0.04,
+            "gate": 1.2,
+            "accent": 0.15,
+            "octave_spread": 0.0,
+            "harmony": 1.0,
+            "register_center": 0.0
+          },
+          "5": {
+            "enabled": true,
+            "density": 0.42,
+            "velocity": 0.82,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.15,
+            "octave_spread": 0.05,
+            "harmony": 1.15,
+            "register_center": 0.0
+          }
+        },
+        "macro_curves": {
+          "energy": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.45
+              ],
+              [
+                0.65,
+                0.30000000000000004
+              ],
+              [
+                1.0,
+                0.2
+              ]
+            ]
+          },
+          "tension": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.4
+              ],
+              [
+                0.65,
+                0.28
+              ],
+              [
+                1.0,
+                0.2
+              ]
+            ]
+          },
+          "density": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.3
+              ],
+              [
+                0.65,
+                0.192
+              ],
+              [
+                1.0,
+                0.12
+              ]
+            ]
+          },
+          "variation": {
+            "enabled": true,
+            "shape": "smooth",
+            "points": [
+              [
+                0.0,
+                0.35
+              ],
+              [
+                0.65,
+                0.22999999999999998
+              ],
+              [
+                1.0,
+                0.15
+              ]
+            ]
+          }
+        },
+        "transition_bars": 0.5
+      }
+    ],
+    "end_action": "stop"
+  },
+  "relations": [
+    {
+      "source_block": 1,
+      "source_part": "rhythm",
+      "destination_block": 2,
+      "destination_part": "rhythm",
+      "algorithm": "Follow",
+      "amount": 0.78,
+      "curve": "Linear",
+      "delay": 0,
+      "probability": 1.0,
+      "enabled": true,
+      "id": 1,
+      "parameters": {},
+      "source_voice_id": null,
+      "destination_voice_id": null
+    },
+    {
+      "source_block": 3,
+      "source_part": "pitch",
+      "destination_block": 5,
+      "destination_part": "pitch",
+      "algorithm": "Follow",
+      "amount": 0.72,
+      "curve": "Linear",
+      "delay": 0,
+      "probability": 1.0,
+      "enabled": true,
+      "id": 2,
+      "parameters": {},
+      "source_voice_id": null,
+      "destination_voice_id": null
+    }
+  ],
+  "blocks": [
+    {
+      "id": 1,
+      "name": "DRUM KIT",
+      "block_type": "DRUM",
+      "algorithm": "Euclidean",
+      "mode": "SEQ",
+      "midi_channel": 10,
+      "midi_port": "",
+      "midi_note": 36,
+      "color": "",
+      "muted": false,
+      "parameters": {
+        "euclidean_steps": 16,
+        "pulses": 5,
+        "euclidean_rotation": 0,
+        "fill_density": 0.94,
+        "event_probability": 1.0,
+        "gate": 0.78,
+        "velocity_base": 0.78,
+        "velocity_range": 0.22,
+        "velocity_accent": 0.24,
+        "timing_swing": 0.08,
+        "timing_humanize": 0.015,
+        "kit_coordinated": true,
+        "kit_meter": "4/4",
+        "kit_phrase_bars": 2,
+        "kit_density": 1.0,
+        "kit_fill": 0.15,
+        "kit_complexity": 0.4,
+        "kit_syncopation": 0.3,
+        "kit_tom_activity": 0.35,
+        "kit_variation": 0.4
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "drum_voices": [
+        {
+          "id": -101,
+          "parent_id": 1,
+          "name": "KICK",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 36,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.82,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.88,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "euclidean_steps": 16,
+            "pulses": 4,
+            "euclidean_rotation": 0,
+            "kit_role": "kick"
+          },
+          "mutators": [],
+          "processes": []
+        },
+        {
+          "id": -102,
+          "parent_id": 1,
+          "name": "SNARE",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 38,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.62,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.76,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "euclidean_steps": 16,
+            "pulses": 2,
+            "euclidean_rotation": 4,
+            "kit_role": "snare"
+          },
+          "mutators": [],
+          "processes": []
+        },
+        {
+          "id": -103,
+          "parent_id": 1,
+          "name": "CLOSED HAT",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 42,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.38,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.53,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "euclidean_steps": 16,
+            "pulses": 8,
+            "euclidean_rotation": 0,
+            "kit_role": "closed_hat"
+          },
+          "mutators": [],
+          "processes": []
+        },
+        {
+          "id": -104,
+          "parent_id": 1,
+          "name": "OPEN HAT",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 46,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.55,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.55,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "pattern": "0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0",
+            "kit_role": "open_hat"
+          },
+          "mutators": [],
+          "processes": []
+        },
+        {
+          "id": -105,
+          "parent_id": 1,
+          "name": "CLAP",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 39,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.58,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.68,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "euclidean_steps": 16,
+            "pulses": 2,
+            "euclidean_rotation": 4,
+            "kit_role": "clap"
+          },
+          "mutators": [],
+          "processes": []
+        },
+        {
+          "id": -106,
+          "parent_id": 1,
+          "name": "PERC",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 50,
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true,
+          "parameters": {
+            "gate": 0.45,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.48,
+            "velocity_range": 0.18,
+            "velocity_accent": 0.14,
+            "pattern": "1,0,0,0,0,0,1,0,0,0,1,0,0,0,1,0",
+            "kit_role": "perc"
+          },
+          "mutators": [],
+          "processes": []
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "BASS FOUNDATION",
+      "block_type": "BASS",
+      "algorithm": "Random Walk",
+      "mode": "SEQ",
+      "midi_channel": 2,
+      "midi_port": "",
+      "midi_note": 60,
+      "color": "",
+      "muted": false,
+      "parameters": {
+        "walk_step": 2,
+        "walk_range": 9,
+        "walk_start": 0,
+        "walk_return_bias": 0.58,
+        "walk_drift": 0.04,
+        "walk_quantize": 1,
+        "fill_density": 0.82,
+        "event_probability": 0.96,
+        "gate": 0.88,
+        "velocity_base": 0.7,
+        "velocity_range": 0.2,
+        "velocity_accent": 0.16,
+        "groove_follow": 0.78,
+        "groove_accent": 0.72,
+        "groove_mode": "Union",
+        "relation_drum_source": 1,
+        "role_center": -24,
+        "role_width": 24,
+        "role_duration": 1.05,
+        "pitch_range": 36,
+        "groove_offset": 0,
+        "role_density": 0.9,
+        "role_root_bias": 0.35,
+        "harmonic_follow": true
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "drum_voices": null
+    },
+    {
+      "id": 3,
+      "name": "CHORDS",
+      "block_type": "CHORD",
+      "algorithm": "Pattern",
+      "mode": "SEQ",
+      "midi_channel": 4,
+      "midi_port": "",
+      "midi_note": 60,
+      "color": "",
+      "muted": false,
+      "parameters": {
+        "pattern": "0,0,4,0,5,0,3,0,0,0,4,0,5,0,7,0",
+        "pattern_probability": 0.96,
+        "pattern_scale": 1.0,
+        "fill_density": 0.86,
+        "event_probability": 0.96,
+        "gate": 1.05,
+        "velocity_base": 0.62,
+        "velocity_range": 0.18,
+        "velocity_accent": 0.12,
+        "harmony_size": 4,
+        "harmony_spread": 7,
+        "harmony_inversion": 0,
+        "chord_degree": 0,
+        "role_center": -12,
+        "role_width": 24,
+        "role_duration": 1.15,
+        "pitch_range": 24,
+        "role_density": 0.85,
+        "role_root_bias": 0.0,
+        "harmonic_follow": true
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "drum_voices": null
+    },
+    {
+      "id": 4,
+      "name": "PAD TEXTURE",
+      "block_type": "PAD",
+      "algorithm": "Weighted Scale",
+      "mode": "SEQ",
+      "midi_channel": 5,
+      "midi_port": "",
+      "midi_note": 60,
+      "color": "",
+      "muted": false,
+      "parameters": {
+        "scale_weights": "4,2,3,2,3,1,2",
+        "scale_octave_spread": 0.08,
+        "structure_length": 8,
+        "fill_density": 0.52,
+        "event_probability": 0.86,
+        "gate": 1.45,
+        "velocity_base": 0.42,
+        "velocity_range": 0.12,
+        "velocity_accent": 0.06,
+        "harmony_size": 3,
+        "harmony_spread": 12,
+        "harmony_inversion": 1,
+        "role_center": -12,
+        "role_width": 24,
+        "role_duration": 1.8,
+        "pitch_range": 24,
+        "role_density": 0.55,
+        "role_root_bias": 0.0,
+        "pad_sustain": 1.75,
+        "harmonic_follow": true
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "drum_voices": null
+    },
+    {
+      "id": 5,
+      "name": "MELODY LEAD",
+      "block_type": "MELODY",
+      "algorithm": "Markov",
+      "mode": "LIVE",
+      "midi_channel": 3,
+      "midi_port": "",
+      "midi_note": 60,
+      "color": "",
+      "muted": false,
+      "parameters": {
+        "markov_jump": 3,
+        "markov_transpose": 0,
+        "markov_octaves": 1,
+        "markov_rest": 0.06,
+        "markov_leap": 0.14,
+        "markov_stay": 0.16,
+        "markov_scale": 1,
+        "live_min_beats": 0.22,
+        "live_max_beats": 0.62,
+        "live_gate": 0.64,
+        "fill_density": 0.84,
+        "event_probability": 0.9,
+        "velocity_base": 0.68,
+        "velocity_range": 0.24,
+        "velocity_accent": 0.18,
+        "harmony_anchor": 0.78,
+        "relation_chord_source": 3,
+        "role_center": 0,
+        "role_width": 36,
+        "role_duration": 0.82,
+        "pitch_range": 36,
+        "gate": 0.65,
+        "role_density": 0.75,
+        "role_root_bias": 0.0,
+        "harmonic_follow": true
+      },
+      "mutators": [
+        {
+          "name": "Transpose",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Scale",
+          "amount": 0.5,
+          "target": "pitch"
+        },
+        {
+          "name": "Octave",
+          "amount": 0.5,
+          "target": "pitch"
+        }
+      ],
+      "processes": [],
+      "drum_voices": null
+    }
+  ],
+  "phrase_state": {}
+}

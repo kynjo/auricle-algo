@@ -1,5 +1,7 @@
-# Сборка Auricle v111
+# Сборка Auricle v2.0
 
+
+Единый источник логотипа — `assets/auricle_logo.svg`. Интерфейс и значки окон используют QSvgRenderer. Перед сборкой Auricle.spec автоматически обновляет `auricle.ico`, `auricle.icns` и PNG 512 px из этого SVG; исходный вектор сохраняется без изменений. ICO содержит размеры 16–256 px, ICNS — обычные и Retina-варианты до 1024 px.
 Рекомендуемая среда: Python 3.12, 64 бита. Каждая нативная сборка выполняется на целевой ОС и архитектуре; PyInstaller не является кросс-компилятором. Windows ARM и универсальный macOS universal2 этим workflow не собираются.
 
 ## Windows
@@ -11,7 +13,7 @@ setup_windows.bat
 build_windows.bat
 ```
 
-Результат: `dist\Auricle\Auricle.exe` и `out\Auricle-v111-windows-x64.zip`. Переносите весь каталог Auricle вместе с `_internal`, а не один EXE. Иконка исполняемого файла берётся из `assets/auricle.ico`.
+Результат: `dist\Auricle\Auricle.exe` и `out\Auricle-v2.0-windows-x64.zip`. Переносите весь каталог Auricle вместе с `_internal`, а не один EXE. Иконка исполняемого файла берётся из `assets/auricle.ico`.
 
 ## Linux
 
@@ -34,7 +36,7 @@ chmod +x appimagetool
 APPIMAGETOOL="$PWD/appimagetool" bash build_appimage.sh
 ```
 
-Если PyInstaller уже отработал, достаточно `APPIMAGETOOL="$PWD/appimagetool" bash packaging/make_appimage.sh`. Иконка копируется из `assets/auricle_icon.png`; ImageMagick не требуется. Результат: `out/Auricle-v111-linux-x64.AppImage`. При упаковке без FUSE скрипт включает `APPIMAGE_EXTRACT_AND_RUN=1` для appimagetool.
+Если PyInstaller уже отработал, достаточно `APPIMAGETOOL="$PWD/appimagetool" bash packaging/make_appimage.sh`. Иконка создаётся из `assets/auricle_logo.svg` через QSvgRenderer; ImageMagick не требуется. AppImage содержит PNG 512 px и масштабируемый SVG в hicolor. Результат: `out/Auricle-v2.0-linux-x64.AppImage`. При упаковке без FUSE скрипт включает `APPIMAGE_EXTRACT_AND_RUN=1` для appimagetool.
 
 ## macOS
 
@@ -56,9 +58,9 @@ python -m pip install -r requirements-build.txt
 python -m build
 ```
 
-Получатся `dist/auricle-111.0.0-py3-none-any.whl` и `dist/auricle-111.0.0.tar.gz`. Wheel содержит все рабочие модули и artwork-пакет `auricle_assets`; исходный архив также содержит тесты, примеры, документацию и сценарии сборки.
+Получатся `dist/auricle-2.0.0-py3-none-any.whl` и `dist/auricle-2.0.0.tar.gz`. Wheel содержит все рабочие модули и artwork-пакет `auricle_assets`; исходный архив также содержит тесты, примеры, документацию и сценарии сборки.
 
-После установки wheel команда `auricle` работает из любого каталога. В `version.py` используются два представления одной версии: `APP_VERSION = "v111"` для приложения и GitHub, `PACKAGE_VERSION = "111.0.0"` для Python и macOS.
+После установки wheel команда `auricle` работает из любого каталога. В `version.py` используются два представления одной версии: `APP_VERSION = "v2.0"` для приложения и GitHub, `PACKAGE_VERSION = "2.0.0"` для Python и macOS.
 
 ## Проверки
 
@@ -91,7 +93,7 @@ Smoke test проверяет запуск, но не заменяет прос�
 
 - Windows / Linux folder build: `dist/Auricle/_internal/examples/`, рядом `docs/` и `assets/`.
 - macOS: `Auricle.app/Contents/Resources/examples/` (в Finder: Show Package Contents).
-- AppImage: при необходимости выполните `./Auricle-v111-linux-x64.AppImage --appimage-extract`; примеры находятся в `squashfs-root/usr/bin/_internal/examples/`.
+- AppImage: при необходимости выполните `./Auricle-v2.0-linux-x64.AppImage --appimage-extract`; примеры находятся в `squashfs-root/usr/bin/_internal/examples/`.
 
 Открывайте проекты из примеров через диалог Open и сохраняйте рабочую копию в свой каталог. `asset_path()` разрешает artwork для исходников, wheel и замороженного приложения независимо от текущего каталога.
 

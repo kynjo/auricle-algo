@@ -13,9 +13,9 @@ def main():
         tag = os.environ.get("GITHUB_REF_NAME")
         if tag != version:
             sys.exit(f"Release tag {tag!r} does not match version.py ({version})")
-    notes = (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8")
-    if notes.splitlines()[0] != f"# Auricle {version}":
-        sys.exit("Update RELEASE_NOTES.md to match version.py")
+    notes = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    if not notes.splitlines()[0].startswith(f"# Auricle {version}"):
+        sys.exit("Update CHANGELOG.md to match version.py")
     repository = os.environ.get("GITHUB_REPOSITORY")
     revision = os.environ.get("GITHUB_SHA")
     if repository and revision:
@@ -24,7 +24,7 @@ def main():
         notes = notes.replace("(docs/", "(" + base + "docs/")
         notes = notes.replace("(README.md)", "(" + base + "README.md)")
         notes = notes.replace("(CHANGELOG.md)", "(" + base + "CHANGELOG.md)")
-        notes = notes.replace("auricle-v111.png)", "auricle-v111.png?raw=true)")
+        notes = notes.replace("auricle-v2.0.png)", "auricle-v2.0.png?raw=true)")
     out = ROOT / "build"
     out.mkdir(exist_ok=True)
     (out / "release-notes.md").write_text(notes, encoding="utf-8")

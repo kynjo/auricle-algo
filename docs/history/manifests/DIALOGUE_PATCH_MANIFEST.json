@@ -1,0 +1,101 @@
+{
+  "release": "v111: instrument dialogue",
+  "date": "2026-10-19",
+  "base_archive": "auricle_chord_fix.zip",
+  "changed_and_new_only": true,
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "bytes": 26076,
+      "sha256": "c6a3e766155e92d90cf8a79bcc2d8ab6327249c12c566c45670512694e1ec198",
+      "previous_sha256": "a36f8711b838f2b1c27c05cbe916698a25bfe8188353d9d913edece022b0e1a8"
+    },
+    {
+      "path": "README.md",
+      "bytes": 9463,
+      "sha256": "522d91f7aa9dcd9fd9a75ff8dff296eb3aeccbd8285d0d1aab4c06be8a62e456",
+      "previous_sha256": "ce65034aec5e3801564442602d446ea8f02d4c5a359ec633370fd0861467039f"
+    },
+    {
+      "path": "auricle_catalogs.py",
+      "bytes": 9816,
+      "sha256": "3ef06e593eaf9e8538414e01acf7c408a8d8acb1fcacbb8fe3a634f9ddd8ae8d",
+      "previous_sha256": "c68f0c25a8aae2c706054cf03610dec1815d09b68f41f48f4db030ba357d6c8f"
+    },
+    {
+      "path": "auricle_engine.py",
+      "bytes": 120622,
+      "sha256": "fe135220ddeed0bf3e94de412c8e7ca3c25b4d41cab4733ade3be37696393d3f",
+      "previous_sha256": "586d03fb48b4df4fab3a5f67003c2d0b2b2022e07268435037e72da4bc8a9569"
+    },
+    {
+      "path": "auricle_gui.py",
+      "bytes": 324629,
+      "sha256": "f195c83522efaa6715fa855049b3d421128690bf8fee9c7de5b30aa816a9014b",
+      "previous_sha256": "fb01ab4f28b040feff05489d6497422a57e9df0b0a46fc5b2e1401874c35a8d7"
+    },
+    {
+      "path": "auricle_model.py",
+      "bytes": 7331,
+      "sha256": "1557d198d0e851d23694dd82b76fcb71a161e0307b40c79de5bf10b5be17cfc9",
+      "previous_sha256": "df7611e88b1255003444465eb95fce47504b386d5861ea43001a2f9f8bd39d97"
+    },
+    {
+      "path": "auricle_relations.py",
+      "bytes": 1796,
+      "sha256": "fe0d6d7bcd3f5f8f3e0eea8d105334afc922cc46212c6bf9b62977cac415b79f",
+      "previous_sha256": "9ba4e2c2dd3c893c0ed899bdf6ea8145aad14c321e537b0e660fcd39f958c107"
+    },
+    {
+      "path": "auricle_transport.py",
+      "bytes": 39679,
+      "sha256": "6540d08eee3fc408d2b3cbba4bc861c0406d6bfbc403ea1e16f9e9768daea080",
+      "previous_sha256": "11dc220776b64077b8bf320f7690a0e0d4892125baea80bdf33488015b18208e"
+    },
+    {
+      "path": "docs/INSTRUMENT_DIALOGUE_RU.md",
+      "bytes": 8644,
+      "sha256": "2ba680379b0d25e416ff8a3c6910a1f29bacc05475970daa9d78051b5ca9e63f",
+      "previous_sha256": null
+    },
+    {
+      "path": "examples/instrument_dialogue_demo.json",
+      "bytes": 14183,
+      "sha256": "c6cf121237dbca34d0040b14e6faf9242c717c10f8aed4f07ecc047825ee6d95",
+      "previous_sha256": null
+    },
+    {
+      "path": "help_content.py",
+      "bytes": 39164,
+      "sha256": "b0cd5be816d3cce5040698806af95bab998f1b1c63e989a29eef3ced9b9a9290",
+      "previous_sha256": "ebfdff646874bfaf4ea5484f5f69ffde87cafdafc26d9e1feca87038ee042626"
+    },
+    {
+      "path": "instrument_dialogue.py",
+      "bytes": 8378,
+      "sha256": "dcb32451e37d84b6672da1cbc73097f910ea34f21f9cbea143de107a0e97d2b7",
+      "previous_sha256": null
+    },
+    {
+      "path": "instrument_dialogue_ui.py",
+      "bytes": 6661,
+      "sha256": "982c2c1a26be5e797d97e6ada509490dbe9adbe1f604d0fa57b130bd26e6338c",
+      "previous_sha256": null
+    },
+    {
+      "path": "tests/test_instrument_dialogue.py",
+      "bytes": 13583,
+      "sha256": "54414d91583f18e1aa3641e82fccc967a3fb7a947f2fe1d7904dcde2892330e1",
+      "previous_sha256": null
+    }
+  ],
+  "verification": {
+    "dialogue_suite": "31 passed in 9.57s",
+    "initial_focused_regression": "112 passed in 20.68s",
+    "remaining_legacy_and_UI_suite": "309 passed in 81.84s",
+    "full_suite_note": "Initial combined run interrupted after progress beyond 83%, without reported failures; remaining legacy/UI files completed in a separate run.",
+    "demo": "32 beats captured; all six instrument channels active; question/response turns respected; no transport errors",
+    "UI": "Qt offscreen at 820x700; colored block selectors, timeline, steppers, save/load and Undo/Redo",
+    "hardware": "MIDI messages captured with a fake port; no physical synthesizer used"
+  }
+}

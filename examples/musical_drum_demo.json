@@ -1,0 +1,462 @@
+{
+  "tempo": 112,
+  "length": 32,
+  "seed": 271828,
+  "root_note": 60,
+  "scale": "Major",
+  "blocks": [
+    {
+      "id": 1,
+      "name": "MUSICAL DRUM KIT",
+      "block_type": "DRUM",
+      "algorithm": "Euclidean",
+      "mode": "SEQ",
+      "midi_channel": 10,
+      "midi_port": "",
+      "midi_note": 60,
+      "parameters": {
+        "kit_coordinated": true,
+        "kit_engine": "map",
+        "kit_motif_enabled": true,
+        "kit_motif_return": 4,
+        "kit_links_enabled": true,
+        "kit_map_x": 0.4,
+        "kit_map_y": 0.65,
+        "kit_motif_change": 0.7,
+        "kit_fill": 0.35,
+        "kit_voice_links": [
+          {
+            "source": -102,
+            "destination": -105,
+            "operation": "answer",
+            "amount": 0.35,
+            "delay": 2,
+            "enabled": true
+          },
+          {
+            "source": -101,
+            "destination": -106,
+            "operation": "complement",
+            "amount": 0.65,
+            "delay": 0,
+            "enabled": true
+          },
+          {
+            "source": -102,
+            "destination": -107,
+            "operation": "answer",
+            "amount": 0.55,
+            "delay": 2,
+            "enabled": true
+          }
+        ],
+        "kit_complexity": 0.6,
+        "kit_syncopation": 0.35,
+        "kit_tom_activity": 0.65,
+        "kit_variation": 0.4,
+        "kit_phrase_bars": 4
+      },
+      "mutators": [],
+      "processes": [],
+      "outputs": {},
+      "color": "",
+      "muted": false,
+      "drum_voices": [
+        {
+          "id": -101,
+          "parent_id": 1,
+          "name": "KICK",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 36,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "kick",
+            "euclidean_steps": 16,
+            "pulses": 4,
+            "euclidean_rotation": 0
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -102,
+          "parent_id": 1,
+          "name": "SNARE",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 38,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "snare",
+            "euclidean_steps": 16,
+            "pulses": 2,
+            "euclidean_rotation": 4
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -103,
+          "parent_id": 1,
+          "name": "CLOSED HAT",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 42,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "closed_hat",
+            "euclidean_steps": 16,
+            "pulses": 8,
+            "euclidean_rotation": 0
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -104,
+          "parent_id": 1,
+          "name": "OPEN HAT",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 46,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "open_hat",
+            "pattern": "0,0,0,0,1,0,0,0,0,0,0,0,1,0,0,0"
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -105,
+          "parent_id": 1,
+          "name": "CLAP",
+          "block_type": "DRUM",
+          "algorithm": "Euclidean",
+          "mode": "SEQ",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 39,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "clap",
+            "euclidean_steps": 16,
+            "pulses": 2,
+            "euclidean_rotation": 4
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -106,
+          "parent_id": 1,
+          "name": "PERC",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "LIVE",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 50,
+          "parameters": {
+            "gate": 0.78,
+            "live_gate": 0.65,
+            "fill_density": 1.0,
+            "event_probability": 1.0,
+            "timing_rate": 1.0,
+            "timing_swing": 0.0,
+            "timing_humanize": 0.0,
+            "timing_offset": 0.0,
+            "velocity_base": 0.72,
+            "velocity_range": 0.25,
+            "velocity_accent": 0.18,
+            "kit_role": "perc",
+            "pattern": "1,0,0,0,0,0,1,0,0,0,1,0,0,0,1,0"
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        },
+        {
+          "id": -107,
+          "parent_id": 1,
+          "name": "TOM",
+          "block_type": "DRUM",
+          "algorithm": "Pattern",
+          "mode": "LIVE",
+          "midi_channel": 10,
+          "midi_channel_override": false,
+          "midi_port": "",
+          "midi_note": 45,
+          "parameters": {
+            "pattern": "0",
+            "fill_density": 1,
+            "event_probability": 1,
+            "velocity_base": 0.72,
+            "velocity_range": 0.1,
+            "gate": 0.65,
+            "live_gate": 0.65,
+            "kit_role": "tom"
+          },
+          "mutators": [],
+          "processes": [],
+          "outputs": {},
+          "color": "",
+          "muted": false,
+          "is_drum_voice": true
+        }
+      ]
+    }
+  ],
+  "relations": [],
+  "block_colors": {},
+  "macros": [],
+  "performance": {},
+  "motifs": {},
+  "phrase_state": {},
+  "harmonic_plan": {},
+  "parameter_policies": {},
+  "composition": {
+    "enabled": true,
+    "meter": "4/4",
+    "loop": true,
+    "end_action": "hold",
+    "sections": [
+      {
+        "id": "sec-8a65f2db74",
+        "type": "Intro",
+        "name": "Intro",
+        "bars": 4,
+        "macros": {
+          "energy": 0.3,
+          "tension": 0.25,
+          "density": 0.36,
+          "variation": 0.2
+        },
+        "blocks": {
+          "1": {
+            "enabled": true,
+            "density": 0.55,
+            "velocity": 0.76,
+            "register_center": 0.0,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.0,
+            "octave_spread": 0.0,
+            "harmony": 1.0
+          }
+        },
+        "macro_curves": {},
+        "color": "#68a9ff",
+        "performance": {
+          "phrase_id": null,
+          "amount": 1,
+          "fit_to_section": true,
+          "duration_beats": 16.0,
+          "block_ids": null,
+          "techniques": {}
+        },
+        "transition_bars": 0.25
+      },
+      {
+        "id": "sec-b6df1d67a9",
+        "type": "Verse",
+        "name": "Verse",
+        "bars": 8,
+        "macros": {
+          "energy": 0.55,
+          "tension": 0.4,
+          "density": 0.58,
+          "variation": 0.32
+        },
+        "blocks": {
+          "1": {
+            "enabled": true,
+            "density": 0.78,
+            "velocity": 0.9,
+            "register_center": 0.0,
+            "variation": 0.16,
+            "gate": 1.0,
+            "accent": 0.0,
+            "octave_spread": 0.0,
+            "harmony": 1.0
+          }
+        },
+        "macro_curves": {},
+        "color": "#b98be8",
+        "performance": {
+          "phrase_id": null,
+          "amount": 1,
+          "fit_to_section": true,
+          "duration_beats": 16.0,
+          "block_ids": null,
+          "techniques": {}
+        },
+        "transition_bars": 0.25
+      },
+      {
+        "id": "sec-09959330c8",
+        "type": "Verse",
+        "name": "Verse",
+        "bars": 8,
+        "macros": {
+          "energy": 0.55,
+          "tension": 0.4,
+          "density": 0.58,
+          "variation": 0.32
+        },
+        "blocks": {
+          "1": {
+            "enabled": true,
+            "density": 0.78,
+            "velocity": 0.9,
+            "register_center": 0.0,
+            "variation": 0.16,
+            "gate": 1.0,
+            "accent": 0.0,
+            "octave_spread": 0.0,
+            "harmony": 1.0
+          }
+        },
+        "macro_curves": {},
+        "color": "#b98be8",
+        "performance": {
+          "phrase_id": null,
+          "amount": 1,
+          "fit_to_section": true,
+          "duration_beats": 16.0,
+          "block_ids": null,
+          "techniques": {}
+        },
+        "transition_bars": 0.25
+      },
+      {
+        "id": "sec-eb990633f6",
+        "type": "Outro",
+        "name": "Outro",
+        "bars": 4,
+        "macros": {
+          "energy": 0.3,
+          "tension": 0.22,
+          "density": 0.32,
+          "variation": 0.18
+        },
+        "blocks": {
+          "1": {
+            "enabled": true,
+            "density": 0.36,
+            "velocity": 0.78,
+            "register_center": 0.0,
+            "variation": 0.1,
+            "gate": 1.0,
+            "accent": 0.0,
+            "octave_spread": 0.0,
+            "harmony": 1.0
+          }
+        },
+        "macro_curves": {},
+        "color": "#91a0d8",
+        "performance": {
+          "phrase_id": null,
+          "amount": 1,
+          "fit_to_section": true,
+          "duration_beats": 16.0,
+          "block_ids": null,
+          "techniques": {}
+        },
+        "transition_bars": 0.25
+      }
+    ]
+  }
+}

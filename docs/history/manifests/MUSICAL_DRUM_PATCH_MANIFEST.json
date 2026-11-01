@@ -1,0 +1,91 @@
+{
+  "version": "v2.0",
+  "date": "2026-10-29",
+  "input_archive": "auricle_gui(5).zip",
+  "input_sha256": "cb3889dcd34363c5b721b7956a00f6b3be34ae609d4bf007787da331cd16e757",
+  "tests": {
+    "total": 1865,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "modules": 117,
+    "execution": "isolated per module"
+  },
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "status": "modified",
+      "sha256": "4634d74353f05b5f5020e2136df60099312c13a029ec56920941b396308dface"
+    },
+    {
+      "path": "README.md",
+      "status": "modified",
+      "sha256": "def41c686f88b4586c412f17246fb7c18741d532d7d809b01755451176c23f04"
+    },
+    {
+      "path": "RELEASE_NOTES.md",
+      "status": "modified",
+      "sha256": "d522c27bd0dac9419189577be63f3c92d04e02f368da8eccd595fa03475bd933"
+    },
+    {
+      "path": "auricle_catalogs.py",
+      "status": "modified",
+      "sha256": "6367236b3ca62a2e5fc2eec838981e83fa5814b719320e5ff1f83956d85f6633"
+    },
+    {
+      "path": "auricle_engine.py",
+      "status": "modified",
+      "sha256": "24f8c0bf698eb417aedb8e2f2dda7f4add81f9f6ec26566e5b59e5d8341a86e9"
+    },
+    {
+      "path": "auricle_gui.py",
+      "status": "modified",
+      "sha256": "55dcb2b697acf2a29baf870350024f654edb4c2ac13e458df0e84988d2792fe0"
+    },
+    {
+      "path": "coordinated_kit.py",
+      "status": "modified",
+      "sha256": "60893ad7e041c02764713741dca2e90e6ea5f1a7997398776357a2b9dd3372e3"
+    },
+    {
+      "path": "docs/DRUM_MUSICAL_RU.md",
+      "status": "new",
+      "sha256": "23b00995e9fab935976fadb6f2314a964085e7f7cf13b29da331e53322a68832"
+    },
+    {
+      "path": "docs/MUSICAL_DRUM_VALIDATION.md",
+      "status": "new",
+      "sha256": "48f52b55761394ac7e7e09183eea8ebcbe100556740262b1442707342fae393d"
+    },
+    {
+      "path": "drum_rhythm.py",
+      "status": "new",
+      "sha256": "05e4a6af0860bc1345b6ffae63f06b6bb0b27b1a096f4e065a5eba289de62440"
+    },
+    {
+      "path": "drum_rhythm_ui.py",
+      "status": "new",
+      "sha256": "1274cc3f24aaf023e8afb3b2f8a43a9a42ab0bc406392e19e45844bc7abf8b0c"
+    },
+    {
+      "path": "examples/musical_drum_demo.json",
+      "status": "new",
+      "sha256": "283e76de0795a3ea7ff55f53fea62821878426ca96f64bfae6f3d3024c272639"
+    },
+    {
+      "path": "pyproject.toml",
+      "status": "modified",
+      "sha256": "e8661f3ba5b67dbc94cdccab75219286a3f092d3a62b48e864578fce7e1028df"
+    },
+    {
+      "path": "tests/test_drum_rhythm.py",
+      "status": "new",
+      "sha256": "94e290f26cb76fa0d2f527efaba00d4c883d0d2ce6058a67c24b4e7e5c931347"
+    },
+    {
+      "path": "tests/test_drum_rhythm_ui.py",
+      "status": "new",
+      "sha256": "277bdc5d7c0d5a5b3c1dbb769c37dd309b9e9cbfe2fd08bca0ba63580f62ada6"
+    }
+  ]
+}
