@@ -12,12 +12,15 @@ from auricle_model import *  # noqa: F401,F403
 from auricle_engine import MusicEngine
 from auricle_relations import validate_relations, next_relation_id, remove_relation, duplicate_relation
 from auricle_persistence import save_project, load_project
-from auricle_transport import Transport, get_midi_output_names
+from auricle_transport import Transport, get_midi_input_names, get_midi_output_names
 from performance_presets import PerformanceRuntime, presets_for, preset_for
 from motif_engine import Motif, MotifEngine, PhraseState, TensionCurve
+from motif_transformations import TRANSFORMATIONS as MOTIF_TRANSFORMATIONS, transform_motif
 from music_director import MusicDirector
 from voice_leading import VoiceLeading
 from relation_context import MusicalContext
-from musical_clock import MusicalClock
+from musical_clock import MusicalClock, MusicalGrid, MusicalPosition
+from musical_events import MusicalEvent
+from composition_planner import CompositionRuntime, SECTION_TYPES, METERS, default_composition, normalize_composition
 
 __all__ = [name for name in globals() if not name.startswith("_")]

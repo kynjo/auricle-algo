@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import hashlib
 from copy import deepcopy
 from auricle_catalogs import ROLE_PROFILES
 from auricle_model import block_root
@@ -51,6 +52,38 @@ def normalized(data):
 
 def chord_name(chord):
     return NOTES[chord['root']] + QUALITIES[chord['quality']][0]
+
+
+def metric_weight(meter, phase):
+    """Primary and secondary accents in quarter-note beats."""
+    accents = {
+        '2/4': ((0, 1),), '3/4': ((0, 1),),
+        '4/4': ((0, 1), (2, .6)), '5/4': ((0, 1), (3, .6)),
+        '6/8': ((0, 1), (1.5, .6)), '7/8': ((0, 1), (1, .5), (2, .6)),
+        '12/8': ((0, 1), (1.5, .5), (3, .7), (4.5, .5)),
+    }
+    return max((weight for position, weight in accents.get(meter, accents['4/4'])
+                if abs(phase-position) < .08), default=0.0)
+
+
+def anchor_selected(seed, block_id, beat, strength, bias=0.0):
+    """Monotonic, reproducible anchoring; strong/cadential beats also scale."""
+    strength = max(0.0, min(1.0, float(strength)))
+    chance = strength + strength * (1-strength) * max(0., min(.9, bias))
+    key = f"{int(seed)}|{int(block_id)}|{round(float(beat)*960)}|harmony"
+    sample = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), 'big') / (1 << 64)
+    return sample < chance
+
+
+def nearest_tone(block, base, target, pitch_classes, center_override=None):
+    """Nearest chord tone in the role register, with minimum overhang if tiny."""
+    profile = ROLE_PROFILES.get(block.block_type, {})
+    center = base + float(block.parameters.get('role_center', profile.get('register_anchor', 0))
+                          if center_override is None else center_override)
+    width = max(6., float(block.parameters.get('role_width', profile.get('pitch_range', 24))))
+    lo, hi = center-width/2, center+width/2
+    return min((n for n in range(128) if n % 12 in pitch_classes),
+               key=lambda n: (max(0, lo-n, n-hi), abs(n-target), n))
 
 
 class HarmonicRuntime:
@@ -104,7 +137,7 @@ class HarmonicRuntime:
                         'total_beats': total, 'held': held}
             cursor = end
 
-    def apply(self, block, event, beat):
+    def apply(self, block, event, beat, strength_override=None, center_override=None):
         if not event or not self.follows(block) or event.get('rhythm', 1) <= 0: return event
         chord = self.at(beat)
         if chord is None: return event
@@ -114,7 +147,8 @@ class HarmonicRuntime:
         role = block.block_type
         if role in ('CHORD', 'PAD'):
             profile = ROLE_PROFILES[role]
-            center = base + float(block.parameters.get('role_center', profile['register_anchor']))
+            center = base + float(block.parameters.get('role_center', profile['register_anchor'])
+                                  if center_override is None else center_override)
             width = max(6.0, float(block.parameters.get('role_width', profile['pitch_range'])))
             token = (chord['cycle'], chord['index'], base,
                      block.parameters.get('harmony_inversion', 0),
@@ -148,17 +182,16 @@ class HarmonicRuntime:
             pitches = [float(note-base) for note in self.voicings[block.id]]
             result['pitch'], result['pitches'] = pitches[0], pitches
         else:
-            strength = max(0.0, min(1.0, float(block.parameters.get('harmonic_strength', .75))))
+            strength = max(0.0, min(1.0, float(strength_override if strength_override is not None else block.parameters.get('harmonic_strength', .75))))
             local = max(0.0, chord['position'])
             bar_phase = local % chord['bar_beats']
-            strong = abs(bar_phase - round(bar_phase)) < .08
+            weight = metric_weight(self.config['meter'], bar_phase)
             cadence = not chord['held'] and chord['remaining'] <= min(1.0, chord['bar_beats']/2)
-            slot = int(math.floor(float(beat)*4 + 1e-8))
-            sample = ((slot*1103515245 + int(block.id)*12345 + int(self.project.seed)) & 0xffff)/65536.0
-            anchor = strength > 0 and (strong or cadence or sample < strength)
+            anchor = anchor_selected(self.project.seed, block.id, beat, strength,
+                                     .5*weight + .35*bool(cadence))
             if anchor:
-                pcs = [chord['root']] if role == 'BASS' and (bar_phase < 1 or cadence) else chord['pitch_classes']
-                note = min((note for note in range(128) if note % 12 in pcs), key=lambda n: (abs(n-target), n))
+                pcs = [chord['root']] if role == 'BASS' and (weight >= .9 or cadence) else chord['pitch_classes']
+                note = nearest_tone(block, base, target, pcs, center_override=center_override)
                 result['pitch'] = float(note-base)
                 result.pop('pitches', None)
         result['harmony'] = chord['name']

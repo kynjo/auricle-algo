@@ -11,10 +11,13 @@ def analyze_groove(rhythm, accents=None) -> dict[str, float]:
         return {"groove": 0.0, "density": 0.0, "syncopation": 0.0, "accent": 0.0}
     hits = [i for i, value in enumerate(values) if value]
     density = len(hits) / len(values)
-    offbeat = sum(1 for i in hits if i % 4 in (1, 3)) / max(1, len(hits))
+    # Sixteenth-note offbeats are weaker than eighth-note "ands", but both
+    # count. This is an offbeat activity metric, not a full metrical model.
+    offbeat = sum((1.0 if i % 4 in (1, 3) else .5 if i % 4 == 2 else 0.0)
+                  for i in hits) / max(1, len(hits))
     accent_values = [float(v) for v in (accents or [])]
-    accent = (sum(max(0.0, min(1.0, v)) for v in accent_values) /
-              max(1, len(accent_values))) if accent_values else density
+    accent = (sum(max(0.0, min(1.0, accent_values[i % len(accent_values)])) for i in hits) /
+              max(1, len(hits))) if accent_values else 0.0
     # Density anchors the signal; offbeat activity and accents distinguish
     # straight, sparse and syncopated patterns without introducing randomness.
     groove = max(0.0, min(1.0, density * 0.55 + offbeat * 0.25 + accent * 0.20))

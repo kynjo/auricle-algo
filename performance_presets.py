@@ -21,6 +21,7 @@ class PerformanceMove:
     start: float
     end: float
     label: str = ""
+    relative: bool = False
 
 
 @dataclass(frozen=True)
@@ -58,17 +59,28 @@ COMMON = (
                       (PerformanceMove("gate", .55, .95),), "in", 2),
     PerformancePreset("rubato", "Rubato", "Agogic", "Gentle timing fluctuation without a permanent tempo shift.",
                       (PerformanceMove("timing_humanize", .0, .10), PerformanceMove("timing_swing", .0, .08)), "pulse", 8),
-    PerformancePreset("register_rise", "Register Rise", "Pitch", "Gradually opens the register upward.",
-                      (PerformanceMove("transpose", 0.0, 7.0),), "in", 8),
-    PerformancePreset("register_fall", "Register Fall", "Pitch", "Gradually moves the register downward.",
-                      (PerformanceMove("transpose", 0.0, -7.0),), "out", 8),
+    PerformancePreset("register_rise", "Register Rise", "Pitch", "Raises Register Center from its manual setting, preserving scale and harmonic pitch classes.",
+                      (PerformanceMove("role_center", 0.0, 12.0, "Register Center offset", relative=True),), "in", 8),
+    PerformancePreset("register_fall", "Register Fall", "Pitch", "Lowers Register Center from its manual setting, preserving scale and harmonic pitch classes.",
+                      (PerformanceMove("role_center", 0.0, -12.0, "Register Center offset", relative=True),), "out", 8),
     PerformancePreset("density_swell", "Density Swell", "Texture", "Gradually increases event density.",
                       (PerformanceMove("fill_density", .25, 1.0), PerformanceMove("event_probability", .55, 1.0)), "in", 4),
     PerformancePreset("density_drop", "Density Drop", "Texture", "Rapidly opens space by reducing density.",
                       (PerformanceMove("fill_density", 1.0, .08), PerformanceMove("event_probability", 1.0, .35)), "out", 2),
     PerformancePreset("accent_build", "Accent Build", "Expression", "Builds accents without necessarily raising average loudness.",
                       (PerformanceMove("velocity_accent", .05, .5),), "in", 4),
+    PerformancePreset("dynamic_scatter", "Dynamic Scatter", "Expression", "Adds velocity variation around the current dynamic in SEQ and LIVE.",
+                      (PerformanceMove("velocity_random", 0., .28),), "in", 8),
+    PerformancePreset("register_bloom", "Register Bloom", "Pitch", "Widens the allowed role register without moving its center.",
+                      (PerformanceMove("role_width", 12., 48.),), "in", 8),
+    PerformancePreset("harmonic_resolve", "Harmonic Resolve", "Harmony", "Gradually anchors BASS/MELODY to chord tones when following Harmonic Plan.",
+                      (PerformanceMove("harmonic_strength", .12, .95),), "in", 8),
 )
+
+KIT_EVOLUTION = PerformancePreset("kit_evolution", "Kit Evolution", "Kit", 
+    "Builds fills, syncopation, tom activity and pattern variation on the shared kit grid.",
+    (PerformanceMove("kit_fill", 0., .7), PerformanceMove("kit_syncopation", .05, .65),
+     PerformanceMove("kit_tom_activity", .05, .8), PerformanceMove("kit_variation", .05, .85)), "in", 16)
 
 TYPE_GESTURES = {
     "DRUM": (
@@ -205,6 +217,7 @@ ALGORITHM_GESTURES: dict[str, tuple[PerformancePreset, ...]] = {
 }
 
 _PRESET_BY_ID = {p.id: p for p in COMMON}
+_PRESET_BY_ID[KIT_EVOLUTION.id] = KIT_EVOLUTION
 for _items in ALGORITHM_GESTURES.values():
     for _p in _items:
         _PRESET_BY_ID[_p.id] = _p
@@ -214,6 +227,11 @@ def _available(block_type: str, algorithm: str) -> list[PerformancePreset]:
     """Return a curated catalogue for one concrete block/algorithm pair."""
     ids = TYPE_GESTURES.get(str(block_type).upper(), TYPE_GESTURES["MELODY"])
     result = [_PRESET_BY_ID[i] for i in ids if i in _PRESET_BY_ID]
+    result.append(_PRESET_BY_ID["dynamic_scatter"])
+    if str(block_type).upper() not in ("DRUM", "PERCUSSION"):
+        result.append(_PRESET_BY_ID["register_bloom"])
+    if str(block_type).upper() in ("BASS", "MELODY"):
+        result.append(_PRESET_BY_ID["harmonic_resolve"])
     result.extend(ALGORITHM_GESTURES.get(str(algorithm), ()))
     # Every algorithm gets a generic expression vocabulary even if it has no
     # specialized mapping. This guarantees complete coverage of the catalog.
@@ -230,6 +248,52 @@ def presets_for(block_type: str, algorithm: str) -> list[PerformancePreset]:
 
 def preset_for(block_type: str, algorithm: str, preset_id: str) -> PerformancePreset | None:
     return next((p for p in _available(block_type, algorithm) if p.id == preset_id), None)
+
+
+def presets_for_entity(block: Any) -> list[PerformancePreset]:
+    presets = presets_for(block.block_type, block.algorithm)
+    if block.block_type == "MELODY":
+        # A lead usually spans three octaves. Move its window far enough to
+        # reshape a central melody rather than merely changing an unused edge.
+        presets = [replace(preset, moves=tuple(replace(move, end=move.end * 2)
+                    if move.parameter == "role_center" else move for move in preset.moves))
+                   if preset.id in ("register_rise", "register_fall") else preset for preset in presets]
+    if getattr(block, "drum_voices", None) is not None:
+        # A kit is a container, not the generator named by its legacy field.
+        # Algorithm gestures belong to the individual voice inspectors.
+        common = {preset.id for preset in COMMON}
+        presets = [preset for preset in presets if preset.id in common]
+        presets = [replace(preset, moves=(PerformanceMove('kit_humanize', 0., 1.),),
+                           description='Adds bounded timing and velocity variation to all Drum Voices.')
+                   if preset.id == 'dynamic_scatter' else preset for preset in presets]
+        from coordinated_kit import coordinated
+        if coordinated(block):
+            presets.append(KIT_EVOLUTION)
+            # Increase/decrease subdivisions while retaining shared phase,
+            # kick/snare anchors and the ensemble BPM.
+            moves = {
+                'accelerando': (PerformanceMove('kit_complexity', .05, .95), PerformanceMove('kit_tom_activity', .05, .65)),
+                'ritardando': (PerformanceMove('kit_complexity', .95, .05), PerformanceMove('kit_tom_activity', .65, .05)),
+                'stringendo': (PerformanceMove('kit_complexity', .1, .9), PerformanceMove('velocity_base', .62, .9)),
+                'smorzando': (PerformanceMove('kit_complexity', .7, .05), PerformanceMove('velocity_base', .82, .28), PerformanceMove('fill_density', .9, .15)),
+            }
+            descriptions = {
+                'accelerando': 'Adds weak-step subdivisions and tom activity; BPM and core kick/snare anchors stay fixed.',
+                'ritardando': 'Removes weak-step subdivisions and tom activity; BPM and core kick/snare anchors stay fixed.',
+                'stringendo': 'Builds subdivision activity and dynamics on the shared Kit grid.',
+                'smorzando': 'Reduces subdivision activity, dynamics and density on the shared Kit grid.',
+            }
+            presets = [replace(preset, moves=moves[preset.id], description=descriptions[preset.id])
+                       if preset.id in moves else preset for preset in presets]
+    return presets
+
+
+def preset_for_entity(block: Any, preset_id: str) -> PerformancePreset | None:
+    return next((preset for preset in presets_for_entity(block) if preset.id == preset_id), None)
+
+
+def has_cached_material(block: Any) -> bool:
+    return block.mode == "SEQ" or any(voice.mode == "SEQ" for voice in getattr(block, "drum_voices", None) or [])
 
 
 def _shape(x: float, shape: str) -> float:
@@ -268,6 +332,8 @@ class ActivePerformance:
     enabled: bool = True
     last_regenerated_progress: float = -1.0
     phrase_id: str | None = None
+    hold: bool = False
+    owner_section: str | None = None
     # Stage transitions overlap briefly. The incoming technique fades in from
     # the parameter values present at activation instead of jumping to its
     # preset start value.
@@ -276,6 +342,7 @@ class ActivePerformance:
     # Values are kept separately from Block.parameters so LIVE can consume
     # temporary technique targets without permanently rewriting the project.
     current_values: dict[str, float] = field(default_factory=dict)
+    relative_bases: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -286,6 +353,7 @@ class ActivePhraseRelease:
     beats: float
     targets: dict[int, dict[str, tuple[bool, float]]]
     missing_keys: dict[int, set[str]]
+    values: dict[int, dict[str, float]] = field(default_factory=dict)
 
 
 class PerformanceRuntime:
@@ -299,7 +367,7 @@ class PerformanceRuntime:
         self._last_time = time.monotonic()
 
     def start(self, block: Any, preset_id: str, amount: float = 1.0, shape: str | None = None, beats: float | None = None, phrase_id: str | None = None):
-        preset = preset_for(block.block_type, block.algorithm, preset_id)
+        preset = preset_for_entity(block, preset_id)
         if preset is None and phrase_id is not None:
             preset = _PRESET_BY_ID.get(str(preset_id))
         if preset is None:
@@ -309,26 +377,54 @@ class PerformanceRuntime:
         if phrase_id is not None:
             for move in preset.moves:
                 try:
-                    crossfade_from[move.parameter]=float(block.parameters.get(move.parameter, move.start))
+                    default = (self.engine.parameter_catalog(block).get(move.parameter, (move.start,))[0]
+                               if move.relative else move.start)
+                    crossfade_from[move.parameter]=float(block.parameters.get(move.parameter, default))
                 except (TypeError,ValueError):
                     crossfade_from[move.parameter]=float(move.start)
             # About half a beat, capped so short stages still have room to act.
             crossfade_beats=min(.75,max(.20,float(beats if beats is not None else preset.default_beats)*.18))
+        self.stop(block.id, regenerate=False)
+        for release in self.active_phrase_releases.values():
+            release.values.pop(block.id, None)
+        self.engine.parameter_influence.remove(block, prefix="release:")
+        catalog = self.engine.parameter_catalog(block)
+        relative_bases = {move.parameter: float(self.engine.parameter_influence.base_value(
+            block, move.parameter, catalog.get(move.parameter, (0., 0., 0.))[0]))
+            for move in preset.moves if move.relative}
         self.active[block.id] = ActivePerformance(
             preset_id=preset.id,
             amount=max(0.0, min(1.0, float(amount))),
             shape=shape or preset.default_shape,
-            beats=max(.25, float(beats if beats is not None else preset.default_beats)),
+            beats=max(.001 if phrase_id is not None else .25, float(beats if beats is not None else preset.default_beats)),
             elapsed_beats=0.0,
             enabled=True,
             phrase_id=phrase_id,
             crossfade_beats=crossfade_beats,
             crossfade_from=crossfade_from,
+            relative_bases=relative_bases,
         )
         return True
 
-    def stop(self, block_id: int):
+    def stop(self, block_id: int, regenerate=True):
         self.active.pop(int(block_id), None)
+        block = self.engine.find_block(int(block_id))
+        if block is not None:
+            changed = self.engine.parameter_influence.remove(block, source_id=f"technique:{block_id}")
+            if changed and regenerate and has_cached_material(block): self.engine.regenerate(block)
+
+    def reset(self):
+        # A stopped phrase must not restart its stage when the header's Blocks
+        # transport starts later. Remove release layers as well as techniques.
+        state = self.engine.director.phrase
+        state.running = False
+        state.stage_index = -1
+        state.memory = {}
+        for block in self.project.blocks:
+            self.engine.parameter_influence.remove(block, prefix="technique:")
+            self.engine.parameter_influence.remove(block, prefix="release:")
+        self.active.clear()
+        self.active_phrase_releases.clear()
 
     def live_value(self, block_id: int, key: str, default=None):
         """Return the active technique value for a LIVE-only destination.
@@ -357,7 +453,7 @@ class PerformanceRuntime:
         keys: set[str] = set()
         for stage_index in range(len(phrase.stages)):
             stage = resolve_phrase_stage(phrase, block.block_type, stage_index)
-            preset = preset_for(block.block_type, block.algorithm, stage.technique_id) or _PRESET_BY_ID.get(stage.technique_id)
+            preset = preset_for_entity(block, stage.technique_id) or _PRESET_BY_ID.get(stage.technique_id)
             if preset:
                 keys.update(move.parameter for move in preset.moves)
         return keys
@@ -387,8 +483,8 @@ class PerformanceRuntime:
         return targets, missing
 
     def start_phrase(self, project: Any, phrase_id: str, block_ids: list[int] | None = None, amount: float = 1.0,
-                     duration_beats: float | None = None):
-        phrase = phrase_with_duration(phrase_for(phrase_id), duration_beats)
+                     duration_beats: float | None = None, *, section_fit: bool = False):
+        phrase = phrase_with_duration(phrase_for(phrase_id), duration_beats, section_fit=section_fit)
         if phrase is None or not phrase.stages:
             return False
         wanted = set(int(x) for x in block_ids) if block_ids else {b.id for b in project.blocks}
@@ -412,6 +508,7 @@ class PerformanceRuntime:
             "snapshot": targets,
             "snapshot_missing": missing,
             "total_beats": float(phrase.total_beats),
+            "section_fit": bool(section_fit),
         }
         # Prime the multidimensional Director state at the exact phrase start.
         self.engine.director.snapshot(0.0)
@@ -460,10 +557,15 @@ class PerformanceRuntime:
         missing = state.memory.get("snapshot_missing", {})
         if not targets:
             return
-        self.active_phrase_releases[pid] = ActivePhraseRelease(
+        values = {bid: dict(active.current_values) for bid, active in self.active.items() if active.phrase_id == pid}
+        release = ActivePhraseRelease(
             phrase_id=pid, elapsed_beats=0.0, beats=max(.5, float(getattr(phrase, "release_beats", 2.0))),
-            targets=targets, missing_keys=missing,
+            targets=targets, missing_keys=missing, values=values,
         )
+        self.active_phrase_releases[pid] = release
+        for block in self.project.blocks:
+            for key, value in values.get(block.id, {}).items():
+                self.engine.set_parameter(block, key, value, source="Phrase release", source_id=f"release:{pid}:{block.id}")
 
     def stop_phrase(self, phrase_id: str):
         state = self.engine.director.phrase
@@ -473,7 +575,7 @@ class PerformanceRuntime:
             self._begin_phrase_release(pid, state, phrase)
         for block_id, active in list(self.active.items()):
             if active.phrase_id == pid:
-                self.active.pop(block_id, None)
+                self.stop(block_id, regenerate=False)
         if state.phrase_id == pid:
             state.running = False
             state.stage_index = -1
@@ -483,10 +585,13 @@ class PerformanceRuntime:
         state.stage_index = stage_index
         wanted=set(state.block_ids)
         for block in project.blocks:
-            if block.id not in wanted:
+            if block.id not in wanted or block.id in state.memory.get("technique_exclusions", ()):
                 continue
             stage = resolve_phrase_stage(phrase, block.block_type, stage_index)
             self.start(block, stage.technique_id, amount=stage.amount * state.intensity, shape=stage.shape or phrase.stages[stage_index].shape or "in", beats=stage.beats, phrase_id=phrase.id)
+            active = self.active.get(block.id)
+            if active is not None:
+                active.owner_section = state.memory.get("section_owner")
 
     def tick(self, running: bool = True, beat_delta: float | None = None, now: float | None = None):
         # The transport supplies its clock delta to every musical consumer.
@@ -501,7 +606,8 @@ class PerformanceRuntime:
         release_deltas = {}
         state=self.engine.director.phrase
         if state.running:
-            phrase=phrase_with_duration(phrase_for(state.phrase_id), state.memory.get("total_beats"))
+            phrase=phrase_with_duration(phrase_for(state.phrase_id), state.memory.get("total_beats"),
+                                        section_fit=state.memory.get("section_fit", False))
             if phrase is None:
                 state.running=False
             else:
@@ -509,56 +615,42 @@ class PerformanceRuntime:
                 elapsed=state.position_beats
                 cursor=0.0; stage_index=len(phrase.stages)-1
                 for i,stage in enumerate(phrase.stages):
-                    cursor += max(.25,float(stage.beats))
+                    cursor += max(.001,float(stage.beats))
                     if elapsed < cursor:
                         stage_index=i; break
                 if stage_index != state.stage_index:
                     self._activate_phrase_stage(self.project,state,phrase,stage_index)
                     # A delayed tick may cross several stages. Enter the
                     # current stage at its real position, not at elapsed zero.
-                    within_stage = max(0.0, elapsed - (cursor - max(.25, float(phrase.stages[stage_index].beats))))
+                    within_stage = max(0.0, elapsed - (cursor - max(.001, float(phrase.stages[stage_index].beats))))
                     for block_id, active in self.active.items():
                         if active.phrase_id == phrase.id:
                             active.elapsed_beats = within_stage
                             activated.add(block_id)
-                if elapsed >= phrase.total_beats:
+                if elapsed >= phrase.total_beats and not state.memory.get("section_hold", False):
                     release_deltas[phrase.id] = max(0.0, elapsed - phrase.total_beats)
                     state.position_beats = phrase.total_beats
                     self.stop_phrase(phrase.id)
-        # Snapshot-based release is deliberately processed separately from
-        # active techniques, so STOP cannot jump directly to the old values.
+        # Fade the Technique category out. Current Macro/Modulation layers
+        # remain live and become audible as the release weight reaches zero.
         for release_id, release in list(self.active_phrase_releases.items()):
             release.elapsed_beats += release_deltas.get(release_id, beat_dt)
-            progress = min(1.0, release.elapsed_beats / max(.5, release.beats))
-            t = _shape(progress, "out")
+            progress = min(1., release.elapsed_beats / max(.5, release.beats))
+            weight = 1. - _shape(progress, "out")
             for block in list(self.project.blocks):
-                values = release.targets.get(block.id)
-                if not values:
-                    continue
-                for key, (_, target) in values.items():
-                    current = block.parameters.get(key, target)
-                    try:
-                        current_f = float(current)
-                    except (TypeError, ValueError):
-                        current_f = target
-                    value = current_f + (target - current_f) * t
-                    if not self.engine.set_parameter(block, key, value, source="Phrase release"):
-                        self.engine.parameter_influence.write(block, key, float(value), "Phrase release")
-                if block.mode == "SEQ" and progress < 1.0:
-                    self.engine.regenerate(block)
-            if progress >= 1.0:
-                for block in list(self.project.blocks):
-                    missing = release.missing_keys.get(block.id, set())
-                    for key in missing:
-                        block.parameters.pop(key, None)
-                    if block.id in release.targets and block.mode == "SEQ":
-                        self.engine.regenerate(block)
-                self.active_phrase_releases.pop(release_id, None)
+                values = release.values.get(block.id, {})
+                for key, value in values.items():
+                    self.engine.set_parameter(block, key, value, source="Phrase release",
+                        source_id=f"release:{release_id}:{block.id}", weight=weight)
+                if progress >= 1.:
+                    self.engine.parameter_influence.remove(block, source_id=f"release:{release_id}:{block.id}")
+                if values and has_cached_material(block): self.engine.regenerate(block)
+            if progress >= 1.: self.active_phrase_releases.pop(release_id, None)
         for block in list(self.project.blocks):
             state = self.active.get(block.id)
             if state is None or not state.enabled:
                 continue
-            preset = preset_for(block.block_type, block.algorithm, state.preset_id)
+            preset = preset_for_entity(block, state.preset_id)
             if preset is None and state.phrase_id is not None:
                 preset = _PRESET_BY_ID.get(state.preset_id)
             if preset is None:
@@ -566,8 +658,11 @@ class PerformanceRuntime:
                 continue
             if block.id not in activated:
                 state.elapsed_beats += beat_dt
-            progress = min(1.0, state.elapsed_beats / max(.25, state.beats))
+            progress = min(1.0, state.elapsed_beats / max(.001, state.beats))
             values = interpolate_preset(preset, progress, state.amount, state.shape)
+            for key, base in state.relative_bases.items():
+                if key in values:
+                    values[key] += base
             # Smooth stage boundary: blend from the outgoing parameter state
             # into the incoming stage during a short musical overlap.
             if state.phrase_id is not None and state.crossfade_beats > 0 and state.elapsed_beats < state.crossfade_beats:
@@ -576,26 +671,26 @@ class PerformanceRuntime:
                     if key in state.crossfade_from:
                         values[key]=state.crossfade_from[key] + (float(value)-state.crossfade_from[key])*xf
             state.current_values = {str(key): float(value) for key, value in values.items()}
+            # Switching Coordinated Kit changes the adapted move set without
+            # restarting the gesture. Retire destinations that no longer act.
+            identity = f"technique:{block.id}"
+            for (owner, key), entry in list(self.engine.parameter_influence.entries.items()):
+                if owner == block.id and key not in values and identity in entry['rows']:
+                    self.engine.parameter_influence.remove(block, source_id=identity, key=key)
             for key, value in values.items():
                 source = "Technique: " + str(state.preset_id)
-                if key == "gate":
-                    self.engine.parameter_influence.write(block, key, max(.05, min(1.0, float(value))), source)
-                elif not self.engine.set_parameter(block, key, value, source=source):
-                    # Representation parameters such as velocity_base and
-                    # velocity_accent are valid performance destinations even
-                    # when an older project did not serialize them explicitly.
-                    self.engine.parameter_influence.write(block, key, float(value), source)
+                if not self.engine.set_parameter(block, key, value, source=source, source_id=f"technique:{block.id}"):
+                    self.engine.parameter_influence.write(block, key, float(value), source, source_id=f"technique:{block.id}")
             # LIVE reads parameters on the next event. SEQ needs regeneration
             # so a gesture changes the cached representation, but regenerating
             # at 5 ms transport resolution would waste CPU and can reshuffle a
             # pattern too aggressively. Rebuild at musical gesture increments.
-            if block.mode == "SEQ" and (progress >= 1.0 or progress - state.last_regenerated_progress >= .04):
+            if has_cached_material(block) and ((progress >= 1.0 and state.last_regenerated_progress < 1.0)
+                                             or progress - state.last_regenerated_progress >= .04):
                 self.engine.regenerate(block)
                 state.last_regenerated_progress = progress
-            if progress >= 1.0:
-                # A gesture is a performance event, not a permanent override.
+            if progress >= 1.0 and state.phrase_id is None and not state.hold:
                 self.stop(block.id)
-                self.engine.regenerate(block)
 
 # ---------------------------------------------------------------------------
 # Musical phrases: composed performance gestures spanning multiple blocks.
@@ -621,7 +716,7 @@ class PerformancePhrase:
 
     @property
     def total_beats(self) -> float:
-        return sum(max(.25, float(s.beats)) for s in self.stages)
+        return sum(max(.001, float(s.beats)) for s in self.stages)
 
 
 PHRASES = (
@@ -705,7 +800,7 @@ def phrase_for(phrase_id: str) -> PerformancePhrase | None:
     return _PHRASE_BY_ID.get(str(phrase_id))
 
 
-def phrase_with_duration(phrase: PerformancePhrase | None, beats: float | None = None) -> PerformancePhrase | None:
+def phrase_with_duration(phrase: PerformancePhrase | None, beats: float | None = None, *, section_fit: bool = False) -> PerformancePhrase | None:
     """Return a scaled copy; the shared phrase catalog remains immutable."""
     if phrase is None or beats is None:
         return phrase
@@ -717,7 +812,7 @@ def phrase_with_duration(phrase: PerformancePhrase | None, beats: float | None =
         return phrase
     # Four beats keeps even the shortest catalog stage above the runtime's
     # quarter-beat minimum; longer phrases can span up to 64 bars in 4/4.
-    total = max(4.0, min(256.0, total))
+    total = max(1.0, min(1024.0, total)) if section_fit else max(4.0, min(256.0, total))
     ratio = total / phrase.total_beats
     return replace(phrase, stages=tuple(replace(stage, beats=stage.beats * ratio) for stage in phrase.stages))
 

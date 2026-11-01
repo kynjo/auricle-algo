@@ -12,25 +12,40 @@ from auricle_catalogs import *  # noqa: F401,F403
 from auricle_catalogs import _clamp, _as_float
 from auricle_model import *  # noqa: F401,F403
 from generators import *  # noqa: F401,F403
-from performance_presets import PerformanceRuntime, presets_for, preset_for
-from motif_engine import Motif, MotifEngine, PhraseState, TensionCurve
+from experimental_generators import (
+    turing_machine, orbital_sequence, geometry_collision,
+    cellular_automaton_evolved, lsystem_sequence_extended,
+)
+from performance_presets import PerformanceRuntime
+from motif_engine import Motif
 from music_director import MusicDirector
 from voice_leading import VoiceLeading
 from relation_context import MusicalContext, analyze_groove, default_relations
-from auricle_drum import fill_at, kit_value, kit_random, live_timing_factor
-from musical_clock import MusicalClock
+from auricle_drum import fill_at, kit_value, kit_random, timing_offset
+from musical_clock import MusicalClock, MusicalGrid
+from musical_events import MusicalEvent
 from motif_development import MotifDevelopment
 from coordinated_kit import KitCoordinator, coordinated, STEP_BEATS, CREATIVE_DEFAULTS
+from drum_rhythm import MAP_DEFAULTS, RhythmContext, retained
 from motif_development import digest
 from pattern_chance import chance_at
+from rhythm_intelligence import (
+    ANCHOR, ORNAMENT, classify_event, class_probability,
+    density_probability,
+)
 from parameter_influence import ParameterInfluence
-from harmonic_plan import HarmonicRuntime
+from harmonic_plan import HarmonicRuntime, anchor_selected, nearest_tone, metric_weight
 from instrument_dialogue import DialogueRuntime
+from relation_runtime import RelationRuntime
+from composition_planner import CompositionRuntime, deterministic_sample
+from composition_performance import SectionPerformanceRuntime
+from section_automation import ParameterAutomationRuntime
+from mutators import SEQUENCE_MUTATORS, mutation_active
 
 class MusicEngine:
     def __init__(self, project: Project):
         self.project = project
-        self.parameter_influence = ParameterInfluence()
+        self.parameter_influence = ParameterInfluence(project)
         self.harmonic_runtime = HarmonicRuntime(project)
         self.dialogue_runtime = DialogueRuntime(project)
         self.live_rng: dict[int, random.Random] = {}
@@ -44,7 +59,8 @@ class MusicEngine:
         self.clock = MusicalClock(project.tempo)
         self._seq_motifs = {}
         self._seq_motif_tokens = {}
-        self.motif_development = MotifDevelopment()
+        self._seq_director_origins = {}
+        self.motif_development = MotifDevelopment(getattr(project, "motif_memory", {}))
         self.kit_coordinator = KitCoordinator()
         self._seq_kit_tokens = {}
         self._kit_source_cache = {}
@@ -52,6 +68,9 @@ class MusicEngine:
         self.performance = PerformanceRuntime(project, self)
         # v100 musical director pipeline
         self.director = MusicDirector(project)
+        self.composition_runtime = CompositionRuntime(project)
+        self.section_performance = SectionPerformanceRuntime(self)
+        self.section_automation = ParameterAutomationRuntime(self)
         self.voice_leading = VoiceLeading()
         # v101 rhythm-first relations context
         self.musical_context = MusicalContext()
@@ -59,6 +78,40 @@ class MusicEngine:
         # Last SEQ step played per block (set by the transport).  LIVE
         # relation destinations read their sources at this position.
         self.source_positions: dict[int, int] = {}
+        self.relation_runtime = RelationRuntime(self)
+        # Chord voicings are pure for a fixed harmonic/register context. A
+        # bounded cache avoids repeatedly solving the same voicing when LIVE
+        # events trigger a project-wide relation refresh.
+        self._chord_voicing_cache = {}
+
+    def director_applies(self, block):
+        state = self.director.phrase
+        parent = self.drum_parent_for(block)
+        return bool(state.running and (not state.block_ids or block.id in state.block_ids
+                     or (parent is not None and parent.id in state.block_ids)))
+
+    def sync_voice_leading_settings(self):
+        """Apply Music Director's Voice Smooth value to the active solver.
+
+        MusicDirector is the persisted source of truth.  Keeping the solver in
+        sync here also covers non-GUI callers that change the Director control
+        directly (presets, scripts, tests, or future automation).
+        """
+        self.voice_leading.smoothness = _clamp(self.director.voice_smooth, 0.0, 1.0)
+        return self.voice_leading.smoothness
+
+    @staticmethod
+    def _phrase_tension_accent(tension, beat):
+        """Shift accent weight between strong and weak quarter-note beats.
+
+        Low phrase tension favors even/down beats; high tension pushes a little
+        emphasis toward the intervening beats. This makes the Tension contour
+        audible even when no Harmonic Plan is enabled.
+        """
+        beat_index = int(math.floor(max(0.0, float(beat)) + 1e-9))
+        weak_beat = 1.0 if beat_index % 2 else -1.0
+        amount = (_clamp(tension, 0.0, 1.0) - .5) * .18
+        return max(.90, min(1.10, 1.0 + amount * weak_beat))
 
     # ---- helpers ----------------------------------------------------------
     def _seed_for(self, block: Block) -> int:
@@ -77,22 +130,9 @@ class MusicEngine:
         return block_root(self.project, block)
 
     def _apply_relation_context(self, block: Block, representation):
-        """v101.1 lightweight live relations: rhythm-first influence layer."""
+        """Expose harmony context; groove dynamics have one explicit stage."""
         role = str(block.block_type).upper()
         ctx = self.musical_context
-        # Rhythm authority: drums define groove density for rhythmic roles.
-        if role == "BASS":
-            source = self.role_relation_source(block)
-            groove = self._groove_for_block(block)
-            groove_active = source is not None and bool(source.outputs.get("rhythm", []))
-        else:
-            groove = ctx.groove
-            groove_active = role in ("PERCUSSION", "MELODY") and bool(ctx.values.get("groove_sources"))
-        if groove_active:
-            factor = 0.85 + groove * 0.30
-            for i, hit in enumerate(representation.rhythm):
-                if hit > 0:
-                    representation.velocity[i] = _clamp(representation.velocity[i] * factor, 0.0, 1.0)
         # Harmony authority: melodic/harmonic roles become slightly more stable
         # when harmony confidence is high.
         if role in ("MELODY", "PAD", "CHORD"):
@@ -101,9 +141,8 @@ class MusicEngine:
     def _apply_groove_to_representation(self, block: Block, representation):
         """Apply the active groove context to generated material.
 
-        v101.2 exposed groove parameters but not every generation path consumed
-        them. This keeps groove as a musical transformation stage after basic
-        relations context and before final role/scale processing.
+        Follow interpolates from unity. No hidden context gain precedes this
+        stage, and a missing authority leaves both dynamics and gate intact.
         """
         role = str(block.block_type).upper()
         if role in ("PERCUSSION", "DRUM"):
@@ -111,6 +150,11 @@ class MusicEngine:
         params = block.parameters
         follow = _clamp(float(params.get("groove_follow", 0.0)), 0.0, 1.0)
         if follow <= 0.0:
+            return
+        source = self.role_relation_source(block) if role == "BASS" else None
+        if source is not None and not source.outputs.get("rhythm"):
+            return
+        if source is None and not self.musical_context.values.get("groove_sources"):
             return
         groove = self._groove_for_block(block)
         for i, hit in enumerate(representation.rhythm):
@@ -120,7 +164,7 @@ class MusicEngine:
             tighten = 1.0 - 0.18 * groove * follow
             representation.duration[i] = max(0.03, representation.duration[i] * tighten)
             representation.velocity[i] = _clamp(
-                representation.velocity[i] * (0.9 + 0.2 * groove * follow), 0.0, 1.0
+                representation.velocity[i] * (1.0 + follow * (groove - .5) * .30), 0.0, 1.0
             )
         self.musical_context.values["groove_applied"] = {
             "block": block.id, "amount": follow, "groove": groove
@@ -238,7 +282,7 @@ class MusicEngine:
         # neutral (0.5 => unchanged) while allowing active chord confidence to
         # strengthen or soften the configured anchor amount.
         harmony = _clamp(float(self.musical_context.harmony), 0.0, 1.0)
-        amount = _clamp(base_amount * (0.75 + 0.5 * harmony), 0.0, 1.0)
+        amount = base_amount + (harmony-.5) * .5 * base_amount * (1-base_amount)
         if amount <= 0.0:
             return
         melody_pitch = list(melody.outputs.get("pitch", []))
@@ -248,6 +292,7 @@ class MusicEngine:
         if not melody_pitch or not chord_pitch:
             return
         out = list(melody_pitch)
+        tone_cache = {}
         live_base = self.source_positions.get(chord.id, 0) if melody.mode == "LIVE" and chord.mode != "LIVE" else 0
         for i, value in enumerate(melody_pitch):
             if self._stream_value(melody_rhythm, i) <= 0.0:
@@ -272,12 +317,19 @@ class MusicEngine:
                 if not found:
                     continue
             root_pitch = self._stream_value(chord_pitch, chord_index)
-            tones = self._chord_pitches(chord, root_pitch)
-            candidates = [tone + 12.0 * octave for tone in tones for octave in range(-8, 9)]
-            anchor = min(candidates, key=lambda candidate: abs(candidate - float(value)))
-            # Relations may pull toward a chord tone but must not leave the
-            # melody's scale (unquantized blends produced C#, Bb, Ab in C).
-            out[i] = self._quantize_pitch(melody, float(value) * (1.0 - amount) + anchor * amount)
+            tones = tone_cache.get(chord_index)
+            if tones is None:
+                tones = self._chord_pitches(chord, root_pitch)
+                tone_cache[chord_index] = tones
+            beat = (self.clock.position_beats if melody.mode == "LIVE" else
+                    self.sequence_origin(melody, len(melody_pitch)) + i*self.sequence_step_beats(melody))
+            if not anchor_selected(self.project.seed, melody.id, beat, amount):
+                continue
+            source_base = int(chord.midi_note) + block_root(self.project, chord) % 12
+            target_base = int(melody.midi_note) + block_root(self.project, melody) % 12
+            pcs = {round(source_base + tone) % 12 for tone in tones}
+            anchor = nearest_tone(melody, target_base, target_base + float(value), pcs) - target_base
+            out[i] = self._quantize_pitch(melody, anchor)
         melody.outputs["pitch"] = out
         self.musical_context.values["chord_to_melody"] = {
             "source": chord.id, "target": melody.id, "harmony_anchor": amount,
@@ -363,10 +415,37 @@ class MusicEngine:
         return self._select_role_source(pool, block, key)
 
     def _relation_participant(self, block: Block) -> bool:
-        if str(block.block_type).upper() in ("DRUM", "BASS", "CHORD", "MELODY"):
+        """Whether this LIVE event needs relation evaluation as a destination.
+
+        A source only has to publish its new snapshot. Its destination applies
+        the graph when that destination's own event is generated. Re-running
+        the complete relation graph for every source event was redundant and
+        caused large CPU spikes in multi-block LIVE projects.
+        """
+        routes = self.relation_runtime.routes()
+        if any(relation_endpoint_id(route, "destination") == int(block.id)
+               for route in routes):
             return True
-        return any(getattr(r, "enabled", True) and block.id in (r.source_block, r.destination_block)
-                   for r in self.project.relations)
+        # A LIVE source must immediately refresh a SEQ destination: the latter
+        # does not generate another LIVE event that could apply the relation
+        # just before playback. LIVE destinations apply incoming relations on
+        # their own next event, so source-only LIVE events can just publish.
+        owners = self.relation_runtime._execution_plan()["owners"]
+        if any(relation_endpoint_id(route, "source") == int(block.id)
+               and getattr(owners.get(relation_endpoint_id(route, "destination")), "mode", "LIVE") == "SEQ"
+               for route in routes):
+            return True
+        role = str(block.block_type).upper()
+        if role in ("BASS", "MELODY"):
+            return self.role_relation_source(block) is not None
+        if role in ("DRUM", "CHORD"):
+            destination_role = "BASS" if role == "DRUM" else "MELODY"
+            selector = "relation_drum_source" if role == "DRUM" else "relation_chord_source"
+            return any(str(candidate.block_type).upper() == destination_role
+                       and candidate.mode == "SEQ"
+                       and int(candidate.parameters.get(selector, -1)) == int(block.id)
+                       for candidate in self.project.blocks)
+        return False
 
     def _sync_rhythm_dependents(self, block: Block):
         """Keep velocity/duration/density/accent consistent with a rhythm that
@@ -395,7 +474,29 @@ class MusicEngine:
         out["density"] = [1.0 if r > 0 else 0.0 for r in rhythm]
         out["accent"] = [1.0 if (r > 0 and v >= 0.85) else 0.0 for r, v in zip(rhythm, velocity)]
 
-    def reset_live(self):
+    def reset_live(self, block=None, *, reset_performance=True):
+        if block is not None:
+            # An edit to one part must not stop another part's technique,
+            # restart its random walk, or erase unrelated feedback history.
+            owners = [block, *(getattr(block, "drum_voices", None) or [])]
+            ids = {owner.id for owner in owners}
+            parent = self.drum_parent_for(block)
+            source_ids = ids | ({parent.id} if parent is not None else set())
+            for mapping in (self.live_rng, self.live_state, self.source_positions,
+                            self._kit_live_slots, self._kit_source_cache):
+                for bid in ids:
+                    mapping.pop(bid, None)
+            for owner in owners:
+                owner.outputs = {}
+                self._base_outputs.pop(owner.id, None)
+            self.relation_runtime.forget(source_ids)
+            for mapping in (self.pending_parameter_modulations, self.parameter_modulation_state):
+                for key in list(mapping):
+                    if key[0] in ids:
+                        mapping.pop(key, None)
+            self.delayed_parameter_modulations = [item for item in self.delayed_parameter_modulations if item[1][0] not in ids]
+            return
+        self.relation_runtime.reset()
         self.live_rng.clear()
         self.live_state.clear()
         self.pending_parameter_modulations.clear()
@@ -409,15 +510,18 @@ class MusicEngine:
         # pulled toward an unrelated previous phrase.
         if hasattr(self, "voice_leading"):
             self.voice_leading.reset()
-        if hasattr(self, "performance"):
-            self.performance.active.clear()
+        if reset_performance and hasattr(self, "performance"):
+            self.performance.reset()
 
     def find_block(self, block_id) -> Optional[Block]:
         return next((b for b in self.project.blocks if b.id == block_id), None)
 
     def event_probability(self, block: Block) -> float:
         base = _clamp(float(block.parameters.get("event_probability", 1.0)), 0.0, 1.0)
-        if getattr(self.director.phrase, "running", False):
+        parent = self.drum_parent_for(block)
+        if parent is not None:
+            base *= _clamp(float(parent.parameters.get("event_probability", 1.0)), 0.0, 1.0)
+        if self.director_applies(block):
             snap=self.director.snapshot()
             role=self.director.role_state(str(block.block_type).upper(),snap)
             # Do not multiply Macro/Technique/Director activity repeatedly.
@@ -425,6 +529,81 @@ class MusicEngine:
             # layers cannot accidentally collapse a healthy part to silence.
             return self.director.bounded_combine(base,role.probability,.10)
         return base
+
+    def _event_meter(self, block, beat=None):
+        """Resolve the meter used to classify anchors for this event."""
+        parent = self.drum_parent_for(block)
+        if parent is not None:
+            raw = str(parent.parameters.get("kit_meter", "")).split(" · ")[0]
+            if "/" in raw:
+                try:
+                    numerator, denominator = (int(part) for part in raw.split("/", 1))
+                    if numerator > 0 and denominator > 0:
+                        return numerator, denominator
+                except (TypeError, ValueError):
+                    pass
+        if self.composition_runtime.enabled():
+            try:
+                raw = str(self.composition_runtime.config().get("meter", "4/4"))
+                numerator, denominator = (int(part) for part in raw.split("/", 1))
+                if numerator > 0 and denominator > 0:
+                    return numerator, denominator
+            except (TypeError, ValueError):
+                pass
+        return 4, 4
+
+    def event_class_info(self, block, beat, slot=None, event=None):
+        """Return the metric class and importance of an event at absolute beat."""
+        plan = self.kit_plan(block, beat)
+        kit_step = None
+        if plan is not None:
+            if slot is None:
+                slot = MusicalGrid(STEP_BEATS).slot_at(beat, "nearest")
+            kit_step = plan.at(block.id, int(slot))
+        return classify_event(
+            block, beat, meter=self._event_meter(block, beat), kit_step=kit_step,
+            phrase_awareness=bool(block.parameters.get("phrase_awareness", True)),
+            phrase_bars=block.parameters.get("phrase_bars", 4) or 4, event=event,
+        )
+
+    def _event_variation_value(self, block, beat):
+        """Return the effective 0..1 variation value for ornament survival."""
+        values = getattr(self.director, "global_macro_values", {})
+        variation = _clamp(float(values.get("variation", .5)), 0.0, 1.0)
+        if self.composition_runtime.enabled():
+            context = self.composition_runtime.context_at(beat)
+            if context is not None:
+                macros = self.composition_runtime.effective_macros(
+                    context["section"], values, context
+                )
+                variation = _clamp(float(macros.get("variation", variation)), 0.0, 1.0)
+        return variation
+
+    def event_gate_allowed(self, block, beat, *, slot=None, event=None):
+        """Apply master Probability and the class-specific anchor/support gates.
+
+        The decision is a stable hash of project seed, block, beat and class,
+        so SEQ, LIVE, restart and seek produce the same gate decision.
+        """
+        event_class, _importance = self.event_class_info(block, beat, slot, event)
+        probability = self.event_probability(block)
+        owners = [block]
+        parent = self.drum_parent_for(block)
+        if parent is not None:
+            owners.append(parent)
+        for owner in owners:
+            probability *= class_probability(owner.parameters, event_class)
+        probability = _clamp(probability, 0.0, 1.0)
+        if probability <= 0.0:
+            return False
+        if probability >= 1.0:
+            return True
+        context = self.composition_runtime.context_at(beat)
+        section_id = str(context["section_id"]) if context is not None else ""
+        sample = deterministic_sample(
+            self.project.seed, block.id, section_id, beat, f"event-class:{event_class}"
+        )
+        return sample < probability
 
     def _fill_density_value(self, block: Block) -> float:
         # `event_density` is retained as a backwards-compatible alias for
@@ -448,7 +627,13 @@ class MusicEngine:
         if block.algorithm == "Cellular Automaton":
             return str(p.get("ca_mode", "Rhythm")) == "Rhythm"
         if block.algorithm == "L-System":
-            return str(p.get("ls_mode", "Pitch")) == "Rhythm"
+            return str(p.get("ls_mode", "Pitch")) in ("Rhythm", "Turtle Rhythm")
+        if block.algorithm == "Turing Machine":
+            return str(p.get("turing_mode", "Rhythm")) == "Rhythm"
+        if block.algorithm == "Orbital Sequence":
+            return str(p.get("orbit_output", "Rhythm")) == "Rhythm"
+        if block.algorithm == "Geometry Collision":
+            return str(p.get("geometry_mode", "Rhythm")) == "Rhythm"
         return False
 
     def _sequence_pitches(self, block: Block, raw: list[float]) -> list[float]:
@@ -533,13 +718,41 @@ class MusicEngine:
             return arpeggiator(length, rng, root, scale, str(p.get("arp_pattern", "0,2,4,6")), int(p.get("arp_octaves", 1)),
                                str(p.get("arp_direction", "Up")), str(p.get("arp_octave_mode", "Cycle")))
         if alg == "Cellular Automaton":
-            return cellular_automaton(length, int(p.get("ca_rule", 30)), str(p.get("ca_seed", "00100000")),
-                                      int(p.get("ca_generations", 2)), str(p.get("ca_mode", "Rhythm")), root, scale,
-                                      float(p.get("ca_density", 1.0)), rng)
+            return cellular_automaton_evolved(
+                length, rule=int(p.get("ca_rule", 30)), seed=str(p.get("ca_seed", "00100000")),
+                generations=int(p.get("ca_generations", 2)), mode=str(p.get("ca_mode", "Rhythm")),
+                root=root, scale_name=scale, density=float(p.get("ca_density", 1.0)),
+                boundary=str(p.get("ca_boundary", "Wrap")),
+                evolution=str(p.get("ca_evolution", "Final Row")), rng=rng,
+            )
         if alg == "L-System":
-            return lsystem_sequence(length, str(p.get("ls_axiom", "A")), str(p.get("ls_rule_a", "AB")), str(p.get("ls_rule_b", "A")),
-                                    int(p.get("ls_iterations", 3)), str(p.get("ls_mode", "Pitch")),
-                                    str(p.get("ls_mapping", "0,1,2,3,4,5,6")), root, scale)
+            return lsystem_sequence_extended(
+                length, axiom=str(p.get("ls_axiom", "A")),
+                rule_a=str(p.get("ls_rule_a", "AB")), rule_b=str(p.get("ls_rule_b", "A")),
+                iterations=int(p.get("ls_iterations", 3)), mode=str(p.get("ls_mode", "Pitch")),
+                mapping=str(p.get("ls_mapping", "0,1,2,3,4,5,6")), root=root, scale_name=scale,
+            )
+        if alg == "Turing Machine":
+            return turing_machine(
+                length, preset=str(p.get("turing_preset", "Busy Beaver")),
+                tape=str(p.get("turing_tape", "00010000")), mode=str(p.get("turing_mode", "Rhythm")),
+                root=root, scale_name=scale, density=float(p.get("turing_density", 1.0)),
+                wrap=bool(p.get("turing_wrap", True)), rng=rng,
+            )
+        if alg == "Orbital Sequence":
+            return orbital_sequence(
+                length, cycle_a=int(p.get("orbit_cycle_a", 8)), cycle_b=int(p.get("orbit_cycle_b", 5)),
+                phase_a=int(p.get("orbit_phase_a", 0)), phase_b=int(p.get("orbit_phase_b", 0)),
+                combine=str(p.get("orbit_mode", "OR")), output=str(p.get("orbit_output", "Rhythm")),
+                rotation=int(p.get("orbit_rotation", 0)), root=root, scale_name=scale,
+            )
+        if alg == "Geometry Collision":
+            return geometry_collision(
+                length, shape=str(p.get("geometry_shape", "Box")),
+                particles=int(p.get("geometry_particles", 2)), speed=float(p.get("geometry_speed", 1.0)),
+                substeps=int(p.get("geometry_substeps", 24)), mode=str(p.get("geometry_mode", "Rhythm")),
+                root=root, scale_name=scale, rng=rng,
+            )
         if alg == "Logistic Chaos":
             return logistic_chaos(length, float(p.get("chaos_r", 3.9)), float(p.get("chaos_x", .5)), root, scale,
                                   int(p.get("chaos_octaves", 2)), bool(p.get("chaos_quantize", 1)),
@@ -562,29 +775,43 @@ class MusicEngine:
             sequence = [v if rng.random() < gate_prob else 0.0 for v in sequence]
         return sequence
 
-    def _role_pitch(self, block: Block, pitch: float) -> float:
+    def effective_register_center(self, block: Block, beat=None, *, include_composition=True) -> float:
+        """Resolved Center, including section offset and cached Director state.
+
+        This observer is pure: UI feedback must not advance Director, write a
+        parameter layer or regenerate material just to display its value.
+        """
+        profile = ROLE_PROFILES.get(block.block_type)
+        if profile is None or block.block_type in PERCUSSIVE_TYPES:
+            return 0.
+        center = float(block.parameters.get("role_center", profile["register_anchor"]))
+        if self.director_applies(block):
+            center += self.director.role_state(block.block_type, self.director._last_state).register_shift
+        context = (self.composition_runtime.context_at(self.clock.position_beats if beat is None else beat)
+                   if include_composition else None)
+        if context is not None:
+            center += self.composition_runtime.block_settings(context["section"], block.id)["register_center"]
+        return _clamp(center, -48., 36.)
+
+    def _role_pitch(self, block: Block, pitch: float, beat=None, *, runtime=False) -> float:
         """Place a generated pitch inside the musical register of its role."""
         profile = ROLE_PROFILES.get(block.block_type)
         if not profile or block.block_type in PERCUSSIVE_TYPES:
             return float(pitch)
         value = float(pitch)
-        anchor = float(block.parameters.get("role_center", profile["register_anchor"]))
+        anchor = self.effective_register_center(block, beat, include_composition=runtime)
         width = max(6.0, float(block.parameters.get("role_width", profile["pitch_range"])))
         lo = anchor - width / 2.0
         hi = anchor + width / 2.0
-        # Preserve pitch class while moving material into the role register.
-        # BASS/PAD/CHORD have an explicit register anchor; MELODY intentionally
-        # preserves the generator's octave choices whenever they fit.
-        if block.block_type in ("BASS", "PAD", "CHORD"):
-            while value - anchor > 6.0:
-                value -= 12.0
-            while value - anchor < -6.0:
-                value += 12.0
-        while value < lo:
-            value += 12.0
-        while value > hi:
-            value -= 12.0
-        return _clamp(value, lo, hi)
+        # Select octaves, never clamp onto a chromatic boundary. If a narrow
+        # window cannot contain this pitch class, retain the closest overhang.
+        base = int(block.midi_note) + block_root(self.project, block) % 12
+        first = math.ceil((-base - value) / 12.)
+        last = math.floor((127 - base - value) / 12.)
+        candidates = [value + 12. * octave for octave in range(first, last + 1)]
+        prefer = value if block.block_type == "MELODY" else anchor
+        return min(candidates, key=lambda note: (max(0., lo - note, note - hi),
+                   abs(note - prefer), abs(note - value), note))
 
     def _apply_role_profile(self, block: Block, representation: MusicalRepresentation, rng: random.Random):
         """Give the generic musical representation its block-role semantics."""
@@ -598,7 +825,7 @@ class MusicEngine:
             root_candidates = []
             for octave in range(-4, 4):
                 root_candidates.extend([12.0 * octave, 7.0 + 12.0 * octave])
-            anchor = float(block.parameters.get("role_center", profile["register_anchor"]))
+            anchor = self.effective_register_center(block, include_composition=False)
             width = max(6.0, float(block.parameters.get("role_width", profile["pitch_range"])))
             lo, hi = anchor - width / 2.0, anchor + width / 2.0
             root_candidates = [self._role_pitch(block, x) for x in root_candidates if lo <= self._role_pitch(block, x) <= hi]
@@ -628,7 +855,7 @@ class MusicEngine:
         voices = ensure_drum_voices(drum)
         size = max((len(v.outputs.get("rhythm", [])) for v in voices), default=0)
         if coordinated(drum):
-            size = self.kit_coordinator.plan(drum, self.project.seed, self.clock.position_beats).length
+            size = self.drum_plan(drum, self.clock.position_beats).length
         if not size:
             drum.outputs = {part: [] for part in PARTS}
             self._base_outputs[drum.id] = {part: [] for part in PARTS}
@@ -640,11 +867,14 @@ class MusicEngine:
         for voice in voices:
             if voice.muted:
                 continue
-            for i in range(size):
-                if coordinated(drum, voice) and voice.mode == "LIVE":
-                    slot = self._kit_live_slots.get(voice.id)
-                    if slot is None or i != slot % size:
-                        continue
+            if coordinated(drum, voice) and voice.mode == "LIVE":
+                slot = self._kit_live_slots.get(voice.id)
+                if slot is None:
+                    continue
+                indices = (slot % size,)
+            else:
+                indices = range(size)
+            for i in indices:
                 hit = self._stream_value(voice.outputs.get("rhythm", []), i)
                 rhythm[i] = max(rhythm[i], hit)
                 velocity[i] = max(velocity[i], self._stream_value(voice.outputs.get("velocity", []), i))
@@ -682,8 +912,18 @@ class MusicEngine:
         drum = self.coordinated_drum(block)
         if drum is None:
             return None
-        return self.kit_coordinator.plan(drum, self.project.seed,
-                                         self.clock.position_beats if beat is None else beat)
+        return self.drum_plan(drum, beat)
+
+    def drum_plan(self, drum, beat=None, *, coordinator=None):
+        position = self.clock.position_beats if beat is None else beat
+        context = self.composition_runtime.context_at(position)
+        bounds = RhythmContext()
+        if context is not None:
+            kit_grid = MusicalGrid(STEP_BEATS)
+            bounds = RhythmContext(str(context["section_id"]),
+                kit_grid.slot_at(context["start_beat"], "nearest"),
+                kit_grid.slot_at(context["end_beat"], "nearest"))
+        return (coordinator or self.kit_coordinator).plan(drum, self.project.seed, position, bounds)
 
     def _apply_kit_plan(self, block, representation, plan, start_slot):
         if plan is None:
@@ -703,8 +943,23 @@ class MusicEngine:
 
     def _drum_window_processing_needed(self, block):
         parent = self.drum_parent_for(block)
-        return parent is not None and any(owner.processes or any(m.target != "pitch" for m in owner.mutators)
+        return parent is not None and any(owner.processes or any(
+            m.target != "pitch" and mutation_active(m)
+            and float(owner.parameters.get(f"mutation_{m.target}", 1.0)) > 0 for m in owner.mutators)
                                           for owner in (block, parent))
+
+    @staticmethod
+    def _mutation_window_needed(block):
+        """Order/range transforms and hit creation need rests and neighbours."""
+        return any(mutation_active(m)
+                   and (m.target != "pitch" or block.block_type not in PERCUSSIVE_TYPES)
+                   and float(block.parameters.get(f"mutation_{m.target}", 1.0)) > 0
+                   and (m.target == "rhythm" or m.name in SEQUENCE_MUTATORS)
+                   for m in block.mutators)
+
+    @staticmethod
+    def _process_window_needed(block):
+        return any(process.type != "Parameter Modulation" for process in block.processes)
 
     def _kit_live_source(self, block, slot, plan, variant):
         """Process a complete musical window, then read the scheduled slot.
@@ -714,17 +969,20 @@ class MusicEngine:
         """
         parent = self.drum_parent_for(block)
         active = self.performance.active.get(block.id)
-        source = replace(block, parameters={**block.parameters, **(active.current_values if active is not None else {})})
+        overrides = {key: value for key, value in (active.current_values.items() if active is not None else ())
+                     if (block.id, key) not in self.parameter_influence.entries}
+        source = replace(block, parameters={**block.parameters, **overrides})
         # LIVE gate may differ from the sequencer gate. Preserve the live
         # adapter override while processing durations over the whole window.
         source.parameters["gate"] = self._live_parameter(block, "gate", block.parameters.get("live_gate", .65))
-        size = plan.length if plan is not None else (variant.motif.steps if variant is not None else self._kit_cycle_length(block))
+        size = plan.length if plan is not None else (variant.motif.steps if variant is not None else
+               (self._kit_cycle_length(block) if parent is not None else max(1, int(self.project.length))))
         start = plan.start_slot if plan is not None else (slot // size) * size
         key = (start, size, plan.token if plan else None, variant.token if variant else None,
                source.algorithm, digest(source.parameters), digest([asdict(m) for m in source.mutators]),
                digest([asdict(p) for p in source.processes]),
-               digest((parent.parameters, [asdict(m) for m in parent.mutators], [asdict(p) for p in parent.processes])),
-               self._seed_for(block))
+               digest((parent.parameters, [asdict(m) for m in parent.mutators], [asdict(p) for p in parent.processes])) if parent else None,
+               self._seed_for(block), self._root(block), self._scale(block), self.project.length)
         cached = self._kit_source_cache.get(block.id)
         if cached is None or cached[0] != key:
             rng = random.Random(self._seed_for(block) + (start // size) * 7919)
@@ -739,8 +997,12 @@ class MusicEngine:
                 self._apply_kit_fills(source, rep)
             self._apply_active_motif(source, rep, variant=variant, start_slot=start)
             self._apply_kit_plan(source, rep, plan, start)
-            self._apply_fill_density(source, rep, rng)
+            source_step_beats = STEP_BEATS if plan is not None else self.sequence_step_beats(source)
             self._process_kit_material(source, rep, rng, plan, start)
+            self._apply_fill_density(
+                source, rep, rng, plan=plan,
+                start_beat=start * source_step_beats, step_beats=source_step_beats,
+            )
             self._kit_source_cache[block.id] = (key, rep)
         else:
             rep = cached[1]
@@ -751,7 +1013,29 @@ class MusicEngine:
         parent = self.drum_parent_for(block)
         if parent is None:
             self._apply_representation_mutators(block, representation, rng)
-            self._apply_processes(block, representation, rng)
+            previous_accent = list(representation.accent)
+            for process in block.processes:
+                previous = list(representation.rhythm)
+                self._apply_processes(replace(block, processes=[process]), representation, rng)
+                if process.target == "rhythm" and process.type != "Parameter Modulation":
+                    representation.rhythm = [float(value > 0) for value in representation.rhythm]
+                    self._seed_new_drum_hits(block, representation, previous)
+            targets = {p.target for p in block.processes if p.type != "Parameter Modulation"}
+            for i, hit in enumerate(representation.rhythm):
+                if "accent" in targets:
+                    representation.velocity[i] += .18 * (_clamp(representation.accent[i], 0, 1) - previous_accent[i])
+                gated = "density" in targets and rng.random() >= _clamp(representation.density[i], 0, 1)
+                if (hit <= 0 or gated or self._fill_density_value(block) <= 0
+                        or representation.velocity[i] <= 0 or representation.duration[i] <= 0):
+                    for part in ("rhythm", "velocity", "duration", "density", "accent"):
+                        getattr(representation, part)[i] = 0.
+                else:
+                    representation.rhythm[i] = 1.
+                    representation.velocity[i] = _clamp(representation.velocity[i], 0, 1)
+                    representation.duration[i] = _clamp(representation.duration[i], 0, 1.5)
+                    representation.density[i] = 1.
+                    representation.accent[i] = (_clamp(representation.accent[i], 0, 1) if "accent" in targets
+                                                else float(representation.velocity[i] >= .85))
             return
         protect = bool(parent.parameters.get("kit_protect_anchors", True))
         anchors = {i for i, hit in enumerate(representation.rhythm)
@@ -804,8 +1088,9 @@ class MusicEngine:
                 if mutator.target != target or intensity <= 0:
                     continue
                 previous = list(representation.rhythm)
-                scaled = Mutator(mutator.name, float(mutator.amount) * intensity, target)
-                values = mutate_sequence(list(getattr(representation, part)), scaled, rng)
+                if target == "pitch":  # A drum voice keeps its assigned hardware note.
+                    continue
+                values = mutate_sequence(list(getattr(representation, part)), mutator, rng, strength=intensity)
                 if target == "rhythm":
                     values = [float(v > .5) for v in values]
                 elif target == "velocity":
@@ -828,26 +1113,87 @@ class MusicEngine:
                 representation.duration[i] = _clamp(float(block.parameters.get("gate", .78)), .05, 1.5)
                 representation.accent[i] = float(representation.velocity[i] >= .85)
 
-    def _apply_kit_output(self, block, representation, start_index=0):
+    def _apply_kit_output(self, block, representation, start_index=0, plan=None):
         """Master retention and expressive dynamics, after voice processing."""
         drum = self.drum_parent_for(block)
         if drum is None:
             return
-        density = kit_value(drum, "kit_density")
+        density = kit_value(drum, "kit_density") * _clamp(float(drum.parameters.get("fill_density", 1.0)), 0., 1.)
         humanize = kit_value(drum, "kit_humanize")
+        # Perform acts on the container. Apply its common controls once on
+        # the voice bus, preserving each voice's authored dynamics and gate.
+        gain = max(0., float(drum.parameters.get("velocity_base", .72))) / .72
+        accent = float(drum.parameters.get("velocity_accent", .18)) - .18
+        gate = max(0., float(drum.parameters.get("gate", .78))) / .78
         seed = self._seed_for(block)
-        plan = self.kit_plan(block, start_index * STEP_BEATS)
+        # A Composition section may begin inside the global kit phrase. The
+        # buffer's first slot can belong to the previous section; retain the
+        # exact plan used to compose this buffer instead of resolving it there.
+        plan = plan or self.kit_plan(block, start_index * STEP_BEATS)
         voice_silent = self._fill_density_value(block) <= 0
         for i, hit in enumerate(representation.rhythm):
             if hit <= 0:
                 continue
             index = start_index + i
-            if voice_silent or (plan is not None and not plan.can_emit(block.id, index, bool(drum.parameters.get("kit_protect_anchors", True)))) or density <= 0 or (density < 1 and kit_random(seed, index, 0) >= density):
+            decision = plan.at(block.id, index) if plan is not None else None
+            event_class, _importance = self.event_class_info(block, index * STEP_BEATS, index)
+            keep = retained(
+                decision, density, kit_random(seed, index, 0),
+                plan is not None and plan.engine == "map",
+                variation=self._event_variation_value(block, index * STEP_BEATS),
+                event_class=event_class,
+            )
+            if voice_silent or (plan is not None and not plan.can_emit(block.id, index, bool(drum.parameters.get("kit_protect_anchors", True)))) or not keep:
                 for part in ("rhythm", "velocity", "duration", "density", "accent"):
                     getattr(representation, part)[i] = 0.0
-            elif humanize:
+            else:
                 factor = 1.0 + (2.0 * kit_random(seed, index, 2) - 1.0) * .15 * humanize
-                representation.velocity[i] = _clamp(representation.velocity[i] * factor, 0.0, 1.0)
+                representation.velocity[i] = _clamp((representation.velocity[i] * gain + accent * .35) * factor, 0., 1.)
+                representation.duration[i] = _clamp(representation.duration[i] * gate, 0., 1.5)
+                if representation.velocity[i] <= 0 or representation.duration[i] <= 0:
+                    for part in ("rhythm", "velocity", "duration", "density", "accent"):
+                        getattr(representation, part)[i] = 0.
+                elif gain != 1. or accent != 0. or humanize:
+                    representation.accent[i] = float(representation.velocity[i] >= .85)
+
+    def drum_bus_event(self, voice, event):
+        """Audible input of a Drum container, without changing hardware notes.
+
+        Bus rhythm/density gate existing voice attacks; numeric transforms
+        preserve each voice's relative dynamics through the bus gain ratio.
+        """
+        parent = self.drum_parent_for(voice)
+        if parent is None:
+            return event
+        parts = {r.destination_part for r in self.relation_runtime.routes() if r.destination_block == parent.id}
+        if not parts or parts == {"pitch"}:
+            return event
+        self._aggregate_drum_outputs(parent)
+        self.apply_relations()
+        original = self._base_outputs.get(parent.id, {})
+        current = parent.outputs
+        if voice.mode == "SEQ":
+            index = self.source_positions.get(voice.id, 0)
+        else:
+            index = self._kit_live_slots.get(voice.id, self.source_positions.get(parent.id, 0))
+        if "rhythm" in parts and self._stream_value(current.get("rhythm", []), index) <= 0:
+            return None
+        if "density" in parts:
+            density = _clamp(self._stream_value(current.get("density", []), index), 0., 1.)
+            if kit_random(self._seed_for(voice), int(self.live_state.get(voice.id, {}).get("events", index + 1)) - 1, 211) >= density:
+                return None
+        result = dict(event)
+        for part, fallback, upper in (("velocity", .8, 1.), ("duration", .78, 1.5)):
+            if part in parts:
+                before = self._stream_value(original.get(part, []), index)
+                after = self._stream_value(current.get(part, []), index)
+                value = float(result.get(part, fallback)) * after / before if before > 0 else after
+                result[part] = _clamp(value, 0., upper)
+        if "accent" in parts:
+            before = self._stream_value(original.get("accent", []), index)
+            after = self._stream_value(current.get("accent", []), index)
+            result["velocity"] = _clamp(float(result.get("velocity", .8)) + .18 * (after - before), 0., 1.)
+        return result if float(result.get("velocity", .8)) > 0 and float(result.get("duration", .78)) > 0 else None
 
     def active_motif(self, block):
         """Explicit per-entity binding, or the selected phrase's role motif."""
@@ -871,6 +1217,22 @@ class MusicEngine:
         # random LIVE intervals do not change the motif's rhythmic identity.
         return motif.step_duration(block.parameters.get("motif_step_beats"))
 
+    def sequence_step_beats(self, block, live=False):
+        """One grid step in quarter-note beats, shared by engine/transport."""
+        if self.coordinated_drum(block) is not None:
+            return STEP_BEATS
+        step = self.motif_step_beats(block)
+        if step is not None:
+            return step
+        rate = self._live_parameter(block, "timing_rate", 1.0)
+        return STEP_BEATS / _clamp(float(rate), .25, 4.0)
+
+    def sequence_origin(self, block, length, beat=None):
+        """Absolute start of the buffer's playback cycle, not its step count."""
+        position = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        grid = MusicalGrid(self.sequence_step_beats(block))
+        return grid.cycle_origin(position, max(1, length))
+
     def _motif_velocity(self, block, motif, index):
         authored = float(motif.velocity[index % len(motif.velocity)]) if motif.velocity else .72
         target = _clamp(float(self._live_parameter(block, "velocity_base", .72)), 0.0, 1.0)
@@ -885,9 +1247,104 @@ class MusicEngine:
         if source is None:
             return None
         position = self.clock.position_beats if beat is None else max(0.0, float(beat))
-        return self.motif_development.resolve(
+        pending = block.parameters.get("motif_pending_transform")
+        if isinstance(pending, dict) and pending.get("source_id") == source.id:
+            step = self.motif_step_beats(block, source)
+            cycle_beats = max(1e-9, source.steps * step)
+            cycle = max(0, int(math.floor(position / cycle_beats + 1e-8)))
+            after_cycle = int(pending.get("after_cycle", cycle))
+            restarted_before_queued_cycle = (
+                not self.clock.running and position + 1e-8 < after_cycle * cycle_beats
+            )
+            if cycle > after_cycle or restarted_before_queued_cycle:
+                source = self._commit_motif_transform(
+                    block, source, pending.get("operation", "retrograde"),
+                    pending.get("amount", 1.0), pending.get("seed", self.project.seed),
+                    regenerate=False,
+                )
+                block.parameters.pop("motif_pending_transform", None)
+                position = max(0.0, float(beat)) if beat is not None else self.clock.position_beats
+        elif pending:
+            # A source change invalidates a queued operation rather than
+            # applying it to an unrelated motif.
+            block.parameters.pop("motif_pending_transform", None)
+        variant = self.motif_development.resolve(
             block.id, source, position, self.motif_step_beats(block, source),
             block.parameters, self._scale(block), self.project.seed, self.clock.running)
+        self.project.motif_memory = self.motif_development.export_memory()
+        return variant
+
+    def _commit_motif_transform(self, block, source, operation, amount=1.0,
+                                seed=None, regenerate=True):
+        """Create a non-destructive, reusable child motif from ``source``."""
+        from motif_transformations import transform_motif
+
+        seed = self.project.seed if seed is None else int(seed)
+        material = transform_motif(source, operation, amount, self._scale(block), seed)
+        number = 1
+        while f"derived_{number}" in self.director.motifs.motifs:
+            number += 1
+        motif_id = f"derived_{number}"
+        title = str(operation).replace("_", " ").title()
+        material = replace(
+            material, id=motif_id,
+            name=f"{source.name} · {title}",
+            parent_id=source.id,
+            transformation=str(operation),
+            transform_amount=float(amount),
+        )
+        self.director.motifs.register(material)
+        # Persist the parent too, including motifs registered by scripts or
+        # phrase tools that have not yet passed through a normal project save.
+        self.project.motifs[source.id] = asdict(source)
+        self.project.motifs[motif_id] = asdict(material)
+        block.parameters.update(
+            motif_id=motif_id,
+            motif_step_beats=material.step_duration(),
+            motif_development="off",
+        )
+        block.parameters.pop("motif_hold", None)
+        block.parameters.pop("motif_pending_transform", None)
+        self.motif_development.forget(block.id)
+        self.project.motif_memory = self.motif_development.export_memory()
+        if regenerate:
+            self.regenerate(block)
+        return material
+
+    def transform_motif(self, block, operation, amount=1.0, seed=None):
+        """Apply a motif transformation now or at the next complete cycle.
+
+        Returns ``(motif, pending)``.  A pending transform is stored on the
+        block and committed at the next source-cycle boundary while playing.
+        """
+        from motif_transformations import TRANSFORMATIONS
+        if str(operation) not in {key for _, key in TRANSFORMATIONS}:
+            raise ValueError(f"Unknown motif transformation: {operation}")
+        try:
+            amount = float(amount)
+        except (TypeError, ValueError):
+            raise ValueError("Motif transformation amount must be numeric")
+        if not math.isfinite(amount):
+            raise ValueError("Motif transformation amount must be finite")
+        source = self.active_motif(block)
+        if source is None:
+            return None, False
+        from motif_transformations import transformations_for_role
+        if str(operation) not in {key for _, key in transformations_for_role(source.role)}:
+            raise ValueError(f"{operation} is not available for {source.role} motifs")
+        if self.coordinated_drum(block) is not None and str(operation) in ("augment", "diminish"):
+            raise ValueError("Augment/diminish are unavailable while the Drum Kit uses a shared timing grid")
+        seed = self.project.seed if seed is None else int(seed)
+        if self.clock.running:
+            step = self.motif_step_beats(block, source)
+            cycle_beats = max(1e-9, source.steps * step)
+            cycle = max(0, int(math.floor(self.clock.position_beats / cycle_beats + 1e-8)))
+            block.parameters["motif_pending_transform"] = {
+                "source_id": source.id, "operation": str(operation),
+                "amount": float(amount), "seed": seed, "after_cycle": cycle,
+            }
+            return source, True
+        return self._commit_motif_transform(block, source, operation, amount, seed), False
 
     def hold_motif(self, block, enabled=True, token=None):
         source = self.active_motif(block)
@@ -936,13 +1393,17 @@ class MusicEngine:
             number += 1
         motif = replace(material, id=f"captured_{number}", name=f"{title} {number}",
                         notes=list(material.notes), rhythm=list(material.rhythm),
-                        velocity=list(material.velocity), variations={})
+                        velocity=list(material.velocity), variations={},
+                        parent_id=material.id if current_variant else "",
+                        transformation="development" if current_variant else "capture",
+                        transform_amount=1.0)
         self.director.motifs.register(motif)
         # Project data owns new captures immediately, including headless saves.
         self.project.motifs[motif.id] = asdict(motif)
         block.parameters.update(motif_id=motif.id, motif_step_beats=motif.step_duration(), motif_development="off")
         block.parameters.pop("motif_hold", None)
         self.motif_development.forget(block.id)
+        self.project.motif_memory = self.motif_development.export_memory()
         self.regenerate(block)
         return motif
 
@@ -965,14 +1426,14 @@ class MusicEngine:
             representation.duration[i] = gate if hit else 0.0
             representation.accent[i] = float(hit and velocity >= .85)
 
-    def _apply_global_macros(self, block: Block, representation, start_slot=0):
+    def _apply_global_macros(self, block: Block, representation, start_slot=0,
+                             start_beat=None, step_beats=None):
         """Apply the always-visible global character controls.
 
-        The midpoint is deliberately neutral, so existing projects keep their
-        generated material until a user moves a header macro. Density affects
-        event retention, Energy affects dynamics and Variation adds controlled
-        accent movement. Tension remains a Director trajectory control and is
-        consumed by phrase snapshots.
+        The midpoint is neutral. In Composition mode, Density is deferred to
+        event time so later sections can restore source attacks; Energy and
+        Variation remain in the source representation and section overrides
+        replace their effect by a ratio at dispatch.
         """
         values = getattr(self.director, "global_macro_values", {})
         energy = max(0.0, min(1.0, float(values.get("energy", .5))))
@@ -981,23 +1442,138 @@ class MusicEngine:
         keep = max(0.0, min(1.0, .25 + 1.5 * density))
         energy_scale = .70 + .60 * energy
         role = str(block.block_type).upper()
+        composition_enabled = self.composition_runtime.enabled()
+        if step_beats is None:
+            step_beats = self.sequence_step_beats(block)
+        if start_beat is None:
+            start_beat = float(start_slot) * float(step_beats)
         for i, hit in enumerate(representation.rhythm):
             if hit <= 0:
                 continue
-            # A LIVE representation contains one event, so its local index is
-            # always zero. Reusing that decision silenced entire voices when
-            # Global Density was lowered, even after New variant.
             slot = start_slot + i
-            if keep < .999 and self.director.decision_value(block.id, "global_density", slot=slot) > keep:
-                representation.rhythm[i] = 0.0
-                representation.velocity[i] = 0.0
-                representation.duration[i] = 0.0
-                continue
+            beat = float(start_beat) + i * float(step_beats)
+            if not composition_enabled and (keep < .999 or variation < .5):
+                event_class, _importance = self.event_class_info(block, beat, slot)
+                class_keep = 1.0 if event_class == ANCHOR else keep
+                if event_class == ORNAMENT:
+                    class_keep *= min(1.0, variation * 2.0)
+                sample = deterministic_sample(
+                    self.project.seed, block.id, "", beat,
+                    f"global-density:{event_class}",
+                )
+                if sample >= class_keep:
+                    representation.rhythm[i] = 0.0
+                    representation.velocity[i] = 0.0
+                    representation.duration[i] = 0.0
+                    continue
             representation.velocity[i] = _clamp(representation.velocity[i] * energy_scale, 0.0, 1.0)
             if abs(variation - .5) > 1e-9:
                 direction = 1.0 if (slot % (2 if role in PERCUSSIVE_TYPES else 3) == 0) else -1.0
                 depth = (variation - .5) * (.32 if role in PERCUSSIVE_TYPES else .20)
                 representation.velocity[i] = _clamp(representation.velocity[i] * (1.0 + direction * depth), 0.0, 1.0)
+
+    @staticmethod
+    def _macro_variation_factor(value, slot, block):
+        percussive = (str(getattr(block, "block_type", "")).upper() in PERCUSSIVE_TYPES
+                      or bool(getattr(block, "is_drum_voice", False)))
+        direction = 1.0 if int(slot) % (2 if percussive else 3) == 0 else -1.0
+        depth = (float(value) - .5) * (.32 if percussive else .20)
+        return max(.1, 1.0 + direction * depth)
+
+    def composition_event_allowed(self, block, beat=None, slot=None, event=None):
+        """Evaluate section mute/density gates before a LIVE event is published."""
+        if not self.composition_runtime.enabled():
+            return True
+        beat = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        if self.composition_runtime.finished(beat):
+            return False
+        context = self.composition_runtime.context(beat)
+        section = context["section"]
+        settings = self.composition_runtime.block_settings(section, block.id)
+        if not settings["enabled"] or settings["density"] <= 0.0:
+            return False
+        macros = self.composition_runtime.effective_macros(section, self.director.global_macro_values, context)
+        event_class, _importance = self.event_class_info(block, beat, slot, event)
+        if event_class == ANCHOR:
+            return True
+        macro_keep = _clamp(.25 + 1.5 * macros["density"], 0.0, 1.0)
+        density = _clamp(settings["density"], 0.0, 1.0)
+        keep = macro_keep * density
+        if event_class == ORNAMENT:
+            keep *= min(1.0, _clamp(macros.get("variation", .5), 0.0, 1.0) * 2.0)
+        if deterministic_sample(
+            self.project.seed, block.id, context["section_id"], beat,
+            f"composition-density:{event_class}",
+        ) >= keep:
+            return False
+        return True
+
+    def apply_composition_event(self, block, event, beat=None, gate_checked=False):
+        """Apply the active section's performance layer to one accepted event.
+
+        This is deliberately after generators, Process, Mutators and Relations:
+        it changes the performed event without destroying source material that
+        another section may need later in the arrangement.
+        """
+        if not event:
+            return event
+        slot_hint = event.pop("_composition_slot", None)
+        if not self.composition_runtime.enabled():
+            return event
+        beat = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        if self.composition_runtime.finished(beat):
+            return None
+        context = self.composition_runtime.context(beat)
+        section = context["section"]
+        settings = self.composition_runtime.block_settings(section, block.id)
+        if not gate_checked and not self.composition_event_allowed(block, beat, slot_hint, event):
+            return None
+        slot = int(slot_hint) if slot_hint is not None else int(round(beat * 4.0))
+        section_id = context["section_id"]
+        seed = int(self.project.seed)
+        macros = self.composition_runtime.effective_macros(section, self.director.global_macro_values, context)
+
+        result = dict(event)
+        percussive = (str(getattr(block, "block_type", "")).upper() in PERCUSSIVE_TYPES
+                      or bool(getattr(block, "is_drum_voice", False)))
+        global_values = self.director.global_macro_values
+        global_energy = _clamp(global_values.get("energy", .5), 0.0, 1.0)
+        global_variation = _clamp(global_values.get("variation", .5), 0.0, 1.0)
+        energy_ratio = (.70 + .60 * macros["energy"]) / max(.01, .70 + .60 * global_energy)
+        variation_ratio = (self._macro_variation_factor(macros["variation"], slot, block)
+                           / self._macro_variation_factor(global_variation, slot, block))
+        local_variation = _clamp(settings["variation"], 0.0, 1.0)
+        local_factor = 1.0
+        if local_variation > 0.0:
+            sample = deterministic_sample(seed, block.id, section_id, beat, "block-variation")
+            local_factor += (sample * 2.0 - 1.0) * local_variation * .18
+        velocity_scale = _clamp(settings["velocity"], 0.0, 1.5)
+        result["velocity"] = _clamp(float(result.get("velocity", .8)) * energy_ratio
+                                    * variation_ratio * local_factor * velocity_scale, 0.0, 1.0)
+        if settings["accent"]:
+            weight = metric_weight(self.composition_runtime.config()["meter"], beat % context["bar_beats"])
+            factor = 1.0 + settings["accent"] * (.35 * weight if weight else -.15)
+            result["velocity"] = _clamp(result["velocity"] * factor, 0., 1.)
+        if settings["gate"] != 1.:
+            result["duration"] = _clamp(float(result.get("duration", .78)) * settings["gate"], 0., 1.5)
+        if not percussive:
+            if settings["octave_spread"] > 0:
+                if deterministic_sample(seed, block.id, section_id, beat, "octave-chance") < settings["octave_spread"]:
+                    pitches = result.get("pitches") or [result.get("pitch", 0.)]
+                    profile = ROLE_PROFILES.get(block.block_type, ROLE_PROFILES["MELODY"])
+                    center = self.effective_register_center(block, beat)
+                    width = max(6., float(block.parameters.get("role_width", profile["pitch_range"])))
+                    base = int(block.midi_note) + block_root(self.project, block) % 12
+                    shifts = [shift for shift in (-12, 12) if all(
+                        center - width / 2 <= float(pitch) + shift <= center + width / 2
+                        and 0 <= base + float(pitch) + shift <= 127 for pitch in pitches)]
+                    if shifts:
+                        choice = min(len(shifts) - 1, int(deterministic_sample(seed, block.id, section_id, beat, "octave-direction") * len(shifts)))
+                        shift = shifts[choice]
+                        result["pitch"] = float(result.get("pitch", pitches[0])) + shift
+                        if "pitches" in result:
+                            result["pitches"] = [float(pitch) + shift for pitch in pitches]
+        return result
 
     def generate_block(self, block: Block, motif_beat=None):
         if (str(block.block_type).upper() == "DRUM"
@@ -1025,18 +1601,27 @@ class MusicEngine:
         else:
             sequence = (sequence * (project_length // max(1, len(sequence)) + 1))[:project_length]
         representation = self._make_representation(block, sequence, rng)
+        step_beats = self.sequence_step_beats(block)
+        origin = (MusicalGrid(STEP_BEATS).beat_at(plan.start_slot) if plan is not None
+                  else self.sequence_origin(block, len(representation.rhythm), motif_beat))
         self._apply_kit_fills(block, representation)
         self._apply_active_motif(block, representation, variant=variant, start_slot=plan.start_slot if plan is not None else None)
         self._apply_kit_plan(block, representation, plan, plan.start_slot if plan is not None else 0)
-        self._apply_fill_density(block, representation, rng)
         self._process_kit_material(block, representation, rng, plan, plan.start_slot if plan is not None else 0)
-        self._apply_relation_context(block, representation)
+        self._apply_fill_density(
+            block, representation, rng, plan=plan,
+            start_beat=origin, step_beats=step_beats,
+        )
         if str(block.block_type).upper() not in ("DRUM", "CHORD"):
             self.update_musical_context()
+        self._apply_relation_context(block, representation)
         self._apply_groove_to_representation(block, representation)  # same stage as LIVE
-        self._apply_global_macros(block, representation, plan.start_slot if plan is not None else 0)
+        self._apply_global_macros(
+            block, representation, plan.start_slot if plan is not None else 0,
+            start_beat=origin, step_beats=step_beats,
+        )
         snap = self.director.snapshot()
-        if self.director.phrase.running:
+        if self.director_applies(block):
             role = str(block.block_type).upper()
             rstate = self.director.role_state(role, snap)
 
@@ -1047,15 +1632,15 @@ class MusicEngine:
             if rstate.activity_mode != "harmonic":
                 base_density=self._fill_density_value(block)
                 keep=self.director.bounded_combine(base_density,rstate.density,.14)
-                # Stable within musical windows and deterministic from the
-                # project seed. Each step has a stable slot within the window.
-                window=max(.25,float(self.director.decision_window_beats))
-                steps_per_window=max(1,int(round(len(representation.rhythm)*window/max(1.0,float(self.project.length)))))
                 for i, hit in enumerate(representation.rhythm):
                     if hit > 0:
-                        beat=float(i)*float(self.project.length)/max(1,len(representation.rhythm))
-                        slot=i % steps_per_window
-                        if self.director.decision_value(block.id,"density",beat,slot) > keep:
+                        beat = origin + i * step_beats
+                        event_class, _importance = self.event_class_info(block, beat)
+                        class_keep = 1.0 if event_class == ANCHOR else keep
+                        if event_class == ORNAMENT:
+                            class_keep *= min(1.0, float(rstate.variation) * 2.0)
+                        decision = self.director.rhythm_decision(block.id, beat)
+                        if event_class != ANCHOR and decision >= class_keep:
                             representation.rhythm[i]=0.0; representation.velocity[i]=0.0; representation.duration[i]=0.0
 
             energy_gain = 0.82 + 0.36 * rstate.energy
@@ -1074,14 +1659,17 @@ class MusicEngine:
                         # the voicing while allowing phrase-shaped expression.
                         representation.velocity[i] = _clamp(
                             representation.velocity[i] * (1.0 + (rstate.variation-.5)*.05), 0.0, 1.0)
+                    beat = origin + i * step_beats
+                    representation.velocity[i] = _clamp(
+                        representation.velocity[i] * self._phrase_tension_accent(rstate.tension, beat),
+                        0.0, 1.0,
+                    )
 
-            if role not in PERCUSSIVE_TYPES:
-                for i, hit in enumerate(representation.rhythm):
-                    if hit > 0:
-                        representation.pitch[i] = float(representation.pitch[i]) + rstate.register_shift
         # Role placement is deliberately last so Director/voice-leading cannot
         # escape BASS/PAD/CHORD registers.
-        if self.director.phrase.running and self.director.voice_leading and block.block_type not in PERCUSSIVE_TYPES:
+        if self.director_applies(block):
+            self.sync_voice_leading_settings()
+        if self.director_applies(block) and self.director.voice_leading and block.block_type not in PERCUSSIVE_TYPES:
             active=[i for i,r in enumerate(representation.rhythm) if r>0]
             if active:
                 # A SEQ pattern is smoothed as a whole loop from a clean voice;
@@ -1095,12 +1683,13 @@ class MusicEngine:
         # the final output must still obey the selected key.
         if block.block_type not in PERCUSSIVE_TYPES:
             representation.pitch = [self._quantize_pitch(block, v) for v in representation.pitch]
-        self._apply_kit_output(block, representation, plan.start_slot if plan is not None else 0)
+        self._apply_kit_output(block, representation, plan.start_slot if plan is not None else 0, plan=plan)
         block.outputs = representation.as_outputs()
         self._base_outputs[block.id] = representation.as_outputs()
         self._seq_motifs[block.id] = motif
         self._seq_motif_tokens[block.id] = variant.token if variant is not None else None
         self._seq_kit_tokens[block.id] = plan.token if plan is not None else None
+        self._seq_director_origins[block.id] = origin
 
     def update_musical_context(self):
         """Refresh shared context from the current authorities."""
@@ -1114,9 +1703,10 @@ class MusicEngine:
             for drum in drums:
                 for i in range(size):
                     rhythm[i] = max(rhythm[i], self._stream_value(drum.outputs.get("rhythm", []), i))
-                    accents[i] = max(accents[i], self._stream_value(drum.outputs.get("accent", []), i))
+                    if self._stream_value(drum.outputs.get("rhythm", []), i) > 0:
+                        accents[i] = max(accents[i], self._stream_value(drum.outputs.get("accent", []), i))
             metrics = self.musical_context.update_from_drum(rhythm, accents)
-            self.musical_context.values["groove_sources"] = [b.id for b in drums]
+            self.musical_context.values["groove_sources"] = [b.id for b in drums if b.outputs.get("rhythm")]
         else:
             metrics = {
                 "groove": 0.0, "density": 0.0,
@@ -1154,7 +1744,8 @@ class MusicEngine:
         # Macro routes are part of the persisted project state.  Apply them
         # before rebuilding material so opening a project produces the same
         # result as touching one of its macro controls once.
-        self.apply_macros()
+        self._prune_modulations()
+        self.apply_macros(regenerate=False)
         # Generate rhythm/harmony authorities first so dependent generators
         # receive a real MusicalContext during their own generation pass.
         authorities = [b for b in self.project.blocks
@@ -1171,6 +1762,9 @@ class MusicEngine:
 
     def regenerate(self, block: Block, motif_beat=None):
         """Regenerate one block after an edit and re-apply all relations."""
+        for changed in self._prune_modulations():
+            if changed.id != block.id and (changed.mode == "SEQ" or getattr(changed, "drum_voices", None) is not None):
+                self.generate_block(changed)
         parent = self.drum_parent_for(block)
         targeted_voice = parent is not None and motif_beat is not None
         if targeted_voice:
@@ -1232,63 +1826,69 @@ class MusicEngine:
         accent = [1.0 if v >= 0.85 else 0.0 for v in velocity]
         return MusicalRepresentation(rhythm, pitch, velocity, duration, rhythm[:], accent)
 
-    def _apply_fill_density(self, block: Block, representation: MusicalRepresentation, rng: random.Random):
-        """Apply the universal generator Fill/Density gate.
+    def _apply_fill_density(
+        self, block: Block, representation: MusicalRepresentation, rng: random.Random,
+        *, plan=None, start_beat=0.0, step_beats=None,
+    ):
+        """Apply Density without randomly deleting the musical backbone.
 
-        Independent of algorithm-specific density parameters (Fibonacci
-        density, CA density...): those shape the algorithm, Fill controls how
-        many of the resulting candidate events are allowed through.
+        Zero remains an explicit silence command. At any positive density,
+        anchors are retained; support follows Density and ornaments also
+        follow the effective Variation macro. Decisions are beat-addressed,
+        not RNG-order dependent, so SEQ and LIVE agree.
         """
         fill = self._fill_density_value(block)
-        if fill >= 1.0 or not representation.rhythm:
+        if not representation.rhythm:
             return
-        for i, r in enumerate(representation.rhythm):
-            if fill > 0.0 and r > 0.0 and rng.random() < fill:
+        if step_beats is None:
+            step_beats = self.sequence_step_beats(block)
+        variation = self._event_variation_value(block, start_beat)
+        if fill >= 1.0 and variation >= .5:
+            return
+        for i, hit in enumerate(representation.rhythm):
+            if hit <= 0:
+                continue
+            beat = float(start_beat) + i * float(step_beats)
+            slot = (int(plan.start_slot) + i) if plan is not None else None
+            event_class, _importance = self.event_class_info(block, beat, slot)
+            keep = density_probability(event_class, fill, variation)
+            sample = deterministic_sample(
+                self.project.seed, block.id, "", beat, f"fill-density:{event_class}"
+            )
+            if keep > 0.0 and sample < keep:
                 continue
             for part in ("rhythm", "velocity", "duration", "density", "accent"):
                 getattr(representation, part)[i] = 0.0
 
     def _apply_representation_mutators(self, block: Block, representation: MusicalRepresentation, rng: random.Random):
-        """Apply mutators independently to rhythm, pitch and velocity."""
+        """Mutate typed streams; seed new rhythm hits before dynamics gates."""
         p = block.parameters
 
         def run(target: str, values: list[float]) -> list[float]:
             intensity = _clamp(float(p.get(f"mutation_{target}", 1.0)), 0.0, 1.0)
+            if target == "pitch" and block.block_type in PERCUSSIVE_TYPES:
+                return list(values)
             for mutator in block.mutators:
                 if getattr(mutator, "target", "pitch") == target:
-                    if intensity <= 0.0:
-                        continue
-                    if intensity >= 0.999:
-                        values = mutate_sequence(values, mutator, rng)
-                    else:
-                        scaled = Mutator(mutator.name, float(mutator.amount) * intensity, target)
-                        values = mutate_sequence(values, scaled, rng)
+                    values = mutate_sequence(values, mutator, rng, strength=intensity)
             return list(values)
 
-        representation.rhythm = [1.0 if v > 0.5 else 0.0 for v in run("rhythm", representation.rhythm)]
-        # A rhythm mutator (Rotate, Shuffle, Invert...) can switch on a step that
-        # was a rest and therefore has no velocity/duration yet. Give such steps
-        # the block's base velocity instead of sending velocity-1 ghost notes.
-        default_velocity = _clamp(float(p.get("velocity_base", 0.72)), 0.05, 1.0)
-        gate = _clamp(float(p.get("gate", 0.78)), 0.05, 1.5)
-        velocity = list(representation.velocity)
-        for i, r in enumerate(representation.rhythm):
-            if r > 0 and (i >= len(velocity) or velocity[i] <= 0):
-                if i >= len(velocity):
-                    velocity.extend([0.0] * (i + 1 - len(velocity)))
-                velocity[i] = default_velocity
+        previous = list(representation.rhythm)
+        representation.rhythm = run("rhythm", representation.rhythm)
+        self._seed_new_drum_hits(block, representation, previous)
         representation.pitch = run("pitch", representation.pitch)
-        representation.velocity = [_clamp(float(v), 0.0, 1.0) for v in run("velocity", velocity)]
-        representation.duration = [max(0.0, float(v)) for v in run("timing", representation.duration)]
+        representation.velocity = run("velocity", representation.velocity)
+        representation.duration = run("timing", representation.duration)
+        # A zero from a velocity/gate mutator really closes that event. Do not
+        # replace its duration with the default gate after the mutation.
+        for i, hit in enumerate(representation.rhythm):
+            if hit <= 0 or representation.velocity[i] <= 0 or representation.duration[i] <= 0:
+                representation.rhythm[i] = representation.velocity[i] = representation.duration[i] = 0.0
         representation.density = representation.rhythm[:]
-        representation.accent = [1.0 if v >= 0.85 else 0.0 for v in representation.velocity]
-        old_duration = representation.duration
-        representation.duration = [
-            ((old_duration[i] if i < len(old_duration) and old_duration[i] > 0 else gate) if r > 0 else 0.0)
-            for i, r in enumerate(representation.rhythm)
-        ]
-        # Cross-block virtual pitch controls. They are real block parameters,
-        # applied here so they affect every generator uniformly.
+        representation.accent = [float(r > 0 and v >= .85)
+                                 for r, v in zip(representation.rhythm, representation.velocity)]
+        # Independent block pitch controls also apply when the mutator chain
+        # is empty; drum note assignment is handled by its voice settings.
         transpose = float(p.get("transpose", 0.0))
         octave = float(p.get("octave", 0.0)) * 12.0
         if transpose or octave:
@@ -1298,11 +1898,16 @@ class MusicEngine:
     @staticmethod
     def parameter_catalog(block: Block) -> dict[str, tuple[float, float, float]]:
         catalog = dict(COMMON_MOD_PARAMETERS)
+        catalog["velocity_random"] = (0., 0., 1.)
+        if block.block_type in ("BASS", "MELODY", "PAD", "CHORD"):
+            catalog["role_center"] = (float(ROLE_PROFILES[block.block_type]["register_anchor"]), -48., 36.)
+            catalog["role_width"] = (float(ROLE_PROFILES[block.block_type]["pitch_range"]), 6., 48.)
         if block.block_type in ("BASS", "MELODY"):
             catalog["harmonic_strength"] = (.75, 0., 1.)
         catalog.update(GENERATOR_MOD_PARAMETERS.get(block.algorithm, {}))
         if getattr(block, "drum_voices", None) is not None:
             catalog.update({key: (value, 0., 1.) for key, value in CREATIVE_DEFAULTS.items()})
+            catalog.update({key: (value, 0., 1.) for key, value in MAP_DEFAULTS.items()})
             catalog.update({key: (default, 0., 1.) for key, default in (("kit_density", 1.), ("kit_swing", 0.), ("kit_humanize", 0.), ("kit_fill", 0.))})
         # Any numeric parameter already stored in a project is a real
         # destination too; use a conservative range around its value.
@@ -1317,14 +1922,17 @@ class MusicEngine:
             catalog[key] = (v, -span * 4.0, span * 4.0)
         return catalog
 
-    def set_parameter(self, block: Block, key: str, value: float, source=None) -> bool:
+    def set_parameter(self, block: Block, key: str, value: float, source=None, *, source_id=None, weight=1.) -> bool:
         """Write a catalog parameter, clamped to its range and keeping its type."""
         catalog = self.parameter_catalog(block)
         if key not in catalog:
             return False
         default, lo, hi = catalog[key]
         value = _clamp(float(value), lo, hi)
-        current = block.parameters.get(key, default)
+        current = self.parameter_influence.base_value(block, key, default)
+        self.parameter_influence.configure(block, key, default, lo, hi,
+            integer=isinstance(current, int) and not isinstance(current, bool) and key not in FLOAT_MOD_KEYS,
+            boolean=isinstance(current, bool))
         if isinstance(current, bool):
             value = bool(value >= 0.5)
         elif key in FLOAT_MOD_KEYS:
@@ -1336,38 +1944,50 @@ class MusicEngine:
         if source is None:
             self.parameter_influence.manual(block, key, value)
         else:
-            self.parameter_influence.write(block, key, value, source)
+            self.parameter_influence.write(block, key, value, source, source_id=source_id, weight=weight)
         return True
 
-    def apply_pending_parameter_modulations(self) -> list[Block]:
-        """Apply values produced on a previous tick, never the current one.
+    def _modulation_identity(self, source, process):
+        index = next((i for i, item in enumerate(source.processes) if item is process), None)
+        prefix = f"modulation:{source.id}:{id(process)}" if index is not None else f"external_modulation:{source.id}:{id(process)}"
+        return f"{prefix}:{process.parameters.get('destination_block', -1)}:{process.parameters.get('destination_parameter', 'fill_density')}"
 
-        A route with ``delay`` N is applied exactly N ticks after it was queued.
-        """
+    def _active_modulation_ids(self):
+        owners = [owner for block in self.project.blocks for owner in (block, *(getattr(block, "drum_voices", None) or []))]
+        return {self._modulation_identity(owner, process) for owner in owners for process in owner.processes
+                if process.type == "Parameter Modulation" and float(process.parameters.get("depth", process.amount)) > 0}
+
+    def _prune_modulations(self):
+        return self.parameter_influence.prune(self.project.blocks, "modulation:", self._active_modulation_ids())
+
+    def apply_pending_parameter_modulations(self) -> list[Block]:
+        """Publish independent routes with one-tick latency and stable layers."""
+        active = self._active_modulation_ids()
+        changed = {block.id for block in self.parameter_influence.prune(self.project.blocks, "modulation:", active)}
+        def valid(key):
+            return len(key) == 2 or not str(key[2]).startswith("modulation:") or key[2] in active
         pending = self.pending_parameter_modulations
         self.pending_parameter_modulations = {}
-        # Age delayed routes *after* taking this tick's pending values, so a
-        # delayed value becomes pending for the following tick.
-        still_delayed = []
+        delayed = []
         for remaining, key, value in self.delayed_parameter_modulations:
+            if not valid(key): continue
             remaining -= 1
-            if remaining <= 0:
-                self.pending_parameter_modulations[key] = value
-            else:
-                still_delayed.append((remaining, key, value))
-        self.delayed_parameter_modulations = still_delayed
-
-        changed = set()
-        for (block_id, key), value in pending.items():
+            if remaining <= 0: self.pending_parameter_modulations[key] = value
+            else: delayed.append((remaining, key, value))
+        self.delayed_parameter_modulations = delayed
+        for state_key, value in pending.items():
+            if not valid(state_key): continue
+            block_id, key = state_key[:2]
             block = self.find_block(block_id)
-            if block is not None and self.set_parameter(block, key, value, source="Parameter Modulation"):
-                changed.add(block.id)
-        changed_blocks = [b for b in self.project.blocks if b.id in changed and
-                          (b.mode == "SEQ" or getattr(b, "drum_voices", None) is not None)]
-        for block in changed_blocks:
-            self.generate_block(block)
-        if changed_blocks:
-            self.apply_relations()
+            if block is None: continue
+            before = (key in block.parameters, block.parameters.get(key))
+            source_id = state_key[2] if len(state_key) > 2 else 'Parameter Modulation'
+            self.set_parameter(block, key, value, source="Parameter Modulation", source_id=source_id)
+            if before != (key in block.parameters, block.parameters.get(key)): changed.add(block.id)
+        changed_blocks = [block for block in self.project.blocks if block.id in changed and
+                          (block.mode == "SEQ" or getattr(block, "drum_voices", None) is not None)]
+        for block in changed_blocks: self.generate_block(block)
+        if changed_blocks: self.apply_relations()
         return changed_blocks
 
     def queue_parameter_modulation(self, source: Block, source_value: float, process: Process):
@@ -1395,10 +2015,14 @@ class MusicEngine:
         maximum = float(p.get("max", cat_hi))
         target = minimum + (maximum - minimum) * normalized
         amount = _clamp(float(p.get("depth", process.amount)), 0.0, 1.0)
-        current = float(destination.parameters.get(key, default))
+        identity = self._modulation_identity(source, process)
+        if amount <= 0:
+            self.parameter_influence.remove(destination, source_id=identity)
+            return
+        current = float(self.parameter_influence.base_value(destination, key, default))
         target = current + (target - current) * amount
         smoothing = _clamp(float(p.get("smoothing", 0.0)), 0.0, 1.0)
-        state_key = (destination.id, key)
+        state_key = (destination.id, key, identity)
         if smoothing:
             previous = self.parameter_modulation_state.get(state_key, current)
             target = previous + (target - previous) * (1.0 - smoothing)
@@ -1419,45 +2043,39 @@ class MusicEngine:
             if values:
                 self.queue_parameter_modulation(source, float(values[index % len(values)]), process)
 
-    def apply_macros(self):
-        """Apply project macro routes to real block parameters.
-
-        The mapping is idempotent: each route remembers the parameter value it
-        started from (``base``) and Amount blends between that base and the
-        macro target, so applying the same macro value twice gives the same
-        result.
-        """
+    def apply_macros(self, regenerate=True):
+        """Publish independent macro layers, remove deleted routes, then resolve."""
         touched = set()
-        for macro in self.project.macros or []:
-            value = _clamp(float(macro.get("value", 0.5)), 0.0, 1.0)
-            for route in macro.get("routes", []) or []:
+        active = set()
+        for mi, macro in enumerate(self.project.macros or []):
+            value = _clamp(float(macro.get("value", .5)), 0., 1.)
+            for ri, route in enumerate(macro.get("routes", []) or []):
                 try:
                     block = self.find_block(int(route.get("block_id", -1)))
                 except (TypeError, ValueError):
                     block = None
-                if block is None:
-                    continue
+                if block is None: continue
                 key = str(route.get("parameter", "fill_density"))
                 catalog = self.parameter_catalog(block)
-                if key not in catalog:
-                    continue
-                default, lo, hi = catalog[key]
-                rlo = float(route.get("min", lo))
-                rhi = float(route.get("max", hi))
-                curve = float(route.get("curve", 1.0))
+                amount = _clamp(float(route.get("amount", 1)), 0., 1.)
+                if key not in catalog or amount <= 0 or not route.get("enabled", True): continue
+                default, low, high = catalog[key]
+                base = float(self.parameter_influence.base_value(block, key, default))
+                route.setdefault("base", base)
+                curve = float(route.get("curve", 1))
                 x = value if curve <= 0 else value ** curve
-                target = rlo + (rhi - rlo) * x
-                amount = _clamp(float(route.get("amount", 1.0)), 0.0, 1.0)
-                if "base" not in route:
-                    route["base"] = float(block.parameters.get(key, default))
-                base = float(route["base"])
+                target = float(route.get("min", low)) + (float(route.get("max", high)) - float(route.get("min", low))) * x
+                identity = f"macro:{mi}:{ri}:{block.id}:{key}"
+                active.add(identity)
                 if self.set_parameter(block, key, base + (target - base) * amount,
-                                      source="Macro: " + str(macro.get("name", "Macro"))):
+                                      source="Macro: " + str(macro.get("name", "Macro")), source_id=identity):
                     touched.add(block.id)
-        for block in self.project.blocks:
-            if block.id in touched and (block.mode == "SEQ" or getattr(block, "drum_voices", None) is not None):
-                self.generate_block(block)
-        self.apply_relations()
+        touched.update(block.id for block in self.parameter_influence.prune(self.project.blocks, "macro:", active))
+        if regenerate:
+            for block in self.project.blocks:
+                if block.id in touched and (block.mode == "SEQ" or getattr(block, "drum_voices", None) is not None):
+                    self.generate_block(block)
+            self.apply_relations()
 
     def randomize_block(self, block: Block, categories=None, amount=0.35, rng=None):
         """Bounded randomization of real block parameters.
@@ -1473,7 +2091,8 @@ class MusicEngine:
         if "Generator" in categories:
             keys.extend(k for k in catalog if k not in COMMON_MOD_PARAMETERS)
         if "Density" in categories:
-            keys.extend(["fill_density", "event_probability"])
+            keys.extend(["fill_density", "event_probability", "anchor_strength",
+                         "support_probability", "ornament_probability"])
         if "Pitch" in categories:
             keys.extend(["transpose", "octave"])
         amount = _clamp(float(amount), 0.0, 1.0)
@@ -1519,46 +2138,60 @@ class MusicEngine:
         performance = getattr(self, "performance", None)
         if performance is not None:
             override = performance.live_value(block.id, key, None)
-            if override is not None:
-                return override
-        return block.parameters.get(key, default)
+            if override is not None and (block.id, key) not in self.parameter_influence.entries:
+                value = override
+            else:
+                value = block.parameters.get(key, default)
+        else:
+            value = block.parameters.get(key, default)
+        parent = self.drum_parent_for(block)
+        if parent is not None:
+            if key == "timing_rate":
+                value = float(value) * float(parent.parameters.get(key, 1.0))
+            elif key in ("timing_swing", "timing_humanize"):
+                value = float(value) + float(parent.parameters.get(key, 0.0))
+        return value
 
     def _live_interval(self, block: Block, rng: random.Random) -> float:
         if self.coordinated_drum(block) is not None:
-            return STEP_BEATS * 60.0 / max(1, self.project.tempo)
+            return self.clock.seconds_for_beats(STEP_BEATS, self.project.tempo)
         step = self.motif_step_beats(block)
         if step is not None:
-            return step * 60.0 / max(1, self.project.tempo)
-        # Continuous timing: a real-valued interval in seconds. No fixed
-        # 16-step grid is used in LIVE mode.
-        base = 60.0 / max(1, self.project.tempo)
+            return self.clock.seconds_for_beats(step, self.project.tempo)
+        # Free generators retain variable intervals. Euclidean alone uses
+        # the same sixteenth grid as SEQ; pulse density never changes tempo.
+        index = max(0, int(self.live_state.get(block.id, {}).get("events", 1)) - 1)
+        seed = self._seed_for(block)
         minimum = max(0.03, float(self._live_parameter(block, "live_min_beats", .18)))
         maximum = max(minimum, float(self._live_parameter(block, "live_max_beats", .85)))
         rate = _clamp(float(self._live_parameter(block, "timing_rate", 1.0)), .25, 4.0)
         swing = _clamp(float(self._live_parameter(block, "timing_swing", 0.0)), 0.0, 0.5)
         humanize = _clamp(float(self._live_parameter(block, "timing_humanize", 0.0)), 0.0, 0.25)
         offset = _clamp(float(self._live_parameter(block, "timing_offset", 0.0)), -0.5, 0.5)
-        # LIVE has no fixed 16th grid, so swing alternates successive accepted
-        # event intervals. This gives Rubato/Swing a meaningful continuous
-        # interpretation while retaining deterministic event order.
-        event_index = int(self.live_state.get(block.id, {}).get("events", 0))
-        swing_factor = 1.0 + (swing * 0.5 if event_index % 2 else 0.0)
-        humanize_factor = 1.0 + rng.uniform(-humanize, humanize) if humanize else 1.0
-        rate_factor = 1.0 / rate
-        offset_factor = max(0.05, 1.0 + offset)
         drum = self.drum_parent_for(block)
-        kit_factor = live_timing_factor(drum, self._seed_for(block), max(0, event_index - 1)) if drum is not None else 1.0
-        if block.algorithm == "Euclidean":
-            density = _clamp(float(self._live_parameter(block, "pulses", 5)) / max(1, self.project.length), 0.05, 1.0)
-            interval = max(0.08, max(minimum, 1.0 - density * 0.7))
-            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
-        if block.algorithm == "Probability":
-            probability = _clamp(float(self._live_parameter(block, "probability", 0.5)), 0.01, 1.0)
-            # Lower probability means more time between accepted events.
-            interval = _clamp(rng.expovariate(probability), minimum, maximum)
-            return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
-        interval = rng.uniform(minimum, maximum)
-        return base * interval * rate_factor * swing_factor * humanize_factor * offset_factor * kit_factor
+
+        def straight(slot):
+            # A separate timing lane allows looking at both neighbouring
+            # intervals without consuming the pitch/velocity generator RNG.
+            if block.algorithm == "Euclidean":
+                return STEP_BEATS / rate
+            u = kit_random(seed, slot, 201)
+            if block.algorithm == "Probability":
+                probability = _clamp(float(self._live_parameter(block, "probability", .5)), .01, 1.0)
+                interval = _clamp(-math.log1p(-u) / probability, minimum, maximum)
+            else:
+                interval = minimum + (maximum - minimum) * u
+            return interval * max(.05, 1.0 + offset) / rate
+
+        def displacement(boundary):
+            # Delay an odd boundary, not the whole pair. Scaling by the
+            # shorter neighbour keeps even very unequal intervals positive.
+            unit = min(straight(boundary - 1), straight(boundary))
+            jitter = (2.0 * kit_random(seed, boundary, 202) - 1.0) * humanize
+            return timing_offset(drum, seed, boundary, swing, jitter) * unit
+
+        beats = straight(index) + displacement(index + 1) - displacement(index)
+        return self.clock.seconds_for_beats(beats, self.project.tempo)
 
     def _next_phase(self, state: dict, size: int) -> int:
         """Return the current step of a cyclic LIVE sequence and advance it."""
@@ -1586,9 +2219,11 @@ class MusicEngine:
             # user-authored relations must not turn the skipped event back
             # into a hit before live_event() returns.
             self.apply_relations(skip_destination=block.id)
+        self.relation_runtime.publish_source(block)
         return None
 
     def live_event(self, block: Block, beat: float | None = None) -> Optional[dict[str, float]]:
+        self.relation_runtime.advance_source(block)
         rng = self._rng_for(block)
         state = self.live_state.setdefault(block.id, {"pitch": 0.0, "last": 0.0})
         state["events"] = int(state.get("events", 0)) + 1
@@ -1599,19 +2234,32 @@ class MusicEngine:
         length = max(1, int(self.project.length))
         root, scale = self._root(block), self._scale(block)
         motif_beat = self.clock.position_beats if beat is None else max(0.0, float(beat))
+        # Headless/offline LIVE previews have no advancing transport clock.
+        # Give successive calls a deterministic musical position instead of
+        # classifying every generated event at the same frozen downbeat.
+        if beat is None and not self.clock.running:
+            motif_beat += kit_index * self.sequence_step_beats(block, live=True)
         variant = self.motif_variant(block, motif_beat)
         motif = variant.motif if variant is not None else None
         plan = self.kit_plan(block, motif_beat)
         kit_source = None
+        if alg == "Euclidean" and plan is None and motif is None and beat is not None:
+            kit_index = max(0, int(math.floor(motif_beat / self.sequence_step_beats(block, live=True) + 1e-8)))
+            # A stalled worker or mode switch joins the current step, including
+            # rests, instead of restarting the generator on its first pulse.
+            state["events"] = kit_index + 1
+            kit_fill = self._kit_fill_at(block, kit_index)
 
-        if plan is not None or self._drum_window_processing_needed(block):
+        if (plan is not None or self._drum_window_processing_needed(block)
+                or self._mutation_window_needed(block) or self._process_window_needed(block)):
             if plan is not None:
-                kit_index = max(0, int(math.floor(motif_beat / STEP_BEATS + 1e-8)))
+                kit_index = max(0, MusicalGrid(STEP_BEATS).slot_at(motif_beat, "floor"))
                 self._kit_live_slots[block.id] = kit_index
                 self.source_positions[self.drum_parent_for(block).id] = kit_index % plan.length
             elif motif is not None:
-                kit_index = max(0, int(math.floor(motif_beat / self.motif_step_beats(block, motif) + 1e-8)))
+                kit_index = max(0, MusicalGrid(self.motif_step_beats(block, motif)).slot_at(motif_beat, "floor"))
             kit_source = self._kit_live_source(block, kit_index, plan, variant)
+            state["phase_index"] = kit_index + 1
             if not kit_source.rhythm[0]:
                 return self._live_rest(block)
             pitch, velocity = kit_source.pitch[0], kit_source.velocity[0]
@@ -1624,18 +2272,28 @@ class MusicEngine:
             pitch = float(motif.notes[index % len(motif.notes)]) if motif.notes else 0.0
             velocity = self._motif_velocity(block, motif, index)
         elif alg in CYCLIC_LIVE_ALGORITHMS:
-            # Deterministic material is stepped through in order (step 0 first).
-            seq = self._seq_material(block, length, rng)
+            # Sequence-based experimental systems have deterministic initial
+            # conditions. Rebuild them from the block seed, not the advancing
+            # LIVE RNG, so step N is the same in SEQ and LIVE.
+            sequence_rng = random.Random(self._seed_for(block)) if alg in (
+                "Cellular Automaton", "L-System", "Turing Machine", "Orbital Sequence", "Geometry Collision"
+            ) else rng
+            seq = self._seq_material(block, length, sequence_rng)
             if not seq:
                 return self._live_rest(block)
             value = seq[self._next_phase(state, len(seq))]
+            if value is None:
+                return self._live_rest(block)
             if self._zero_is_rest(block):
                 if not value and not kit_fill:
                     return self._live_rest(block)
                 pitch = 0.0
             else:
-                pitch = float(value or 0.0)
-            velocity = .8 if alg in RHYTHM_ALGORITHMS or alg in ("De Bruijn", "Cellular Automaton") else rng.uniform(.5, 1.0)
+                pitch = float(value)
+            rhythm_mode = self._zero_is_rest(block)
+            velocity = .8 if (alg in RHYTHM_ALGORITHMS or rhythm_mode and alg in (
+                "De Bruijn", "Cellular Automaton", "L-System", "Turing Machine", "Orbital Sequence", "Geometry Collision"
+            )) else rng.uniform(.5, 1.0)
         elif alg == "Scale Walker":
             count = len(scale_intervals(scale))
             center, lo, hi = scale_walker_bounds(count, int(p.get("scale_octaves", 2)))
@@ -1657,14 +2315,15 @@ class MusicEngine:
             state["pitch"] = pitch
             velocity = rng.uniform(.5, 1.0)
         elif alg == "Euclidean":
-            steps = max(1, min(length, int(self._live_parameter(block, "euclidean_steps", length))))
-            pulses = max(1, min(steps, int(self._live_parameter(block, "pulses", 5))))
-            # A rotating continuous phase, rather than a fixed step counter.
-            phase = (state.get("phase", 0.0) + pulses / float(steps)) % 1.0
-            state["phase"] = phase
-            rotation = int(self._live_parameter(block, "euclidean_rotation", 0)) % max(1, steps)
-            rotated_phase = (phase + rotation / float(max(1, steps))) % 1.0
-            if rotated_phase > pulses / float(steps) and not kit_fill:
+            cycle = max(1, min(length, int(p.get("structure_length", length))))
+            steps = max(1, min(cycle, int(self._live_parameter(block, "euclidean_steps", cycle))))
+            pulses = int(self._live_parameter(block, "pulses", 5))
+            rotation = int(self._live_parameter(block, "euclidean_rotation", 0))
+            pattern = euclidean(steps, pulses, rotation)
+            # Match SEQ's algorithm cycle, STRUCTURE rotation and final
+            # project-length tiling, including non-divisible cycle lengths.
+            position = ((kit_index % length) % cycle + int(p.get("structure_rotation", 0))) % cycle
+            if not pattern[position % steps] and not kit_fill:
                 return self._live_rest(block)
             pitch = 0.0
             velocity = 0.8
@@ -1734,6 +2393,10 @@ class MusicEngine:
             velocity = _clamp(float(velocity) * .45 + target * .55, 0.0, 1.0)
         if velocity_accent_override is not None and motif is None and plan is None:
             velocity = _clamp(float(velocity) + float(velocity_accent_override) * .35, 0.0, 1.0)
+        if motif is None and plan is None:
+            spread = _clamp(float(self._live_parameter(block, "velocity_random", 0.)), 0., 1.)
+            if spread:
+                velocity = _clamp(float(velocity) + rng.uniform(-spread, spread), .05, 1.)
         representation = MusicalRepresentation(
             rhythm=[1.0], pitch=[float(pitch)], velocity=[float(velocity)],
             duration=[live_gate], density=[1.0], accent=[1.0 if velocity >= 0.85 else 0.0],
@@ -1744,14 +2407,18 @@ class MusicEngine:
             self._apply_active_motif(block, representation, beat=motif_beat, variant=variant)
         if kit_source is None:
             self._process_kit_material(block, representation, rng, plan, kit_index)
-        self._apply_relation_context(block, representation)
         self.update_musical_context()
+        self._apply_relation_context(block, representation)
         self._apply_groove_to_representation(block, representation)
         # LIVE events must receive the same always-visible character controls
         # as SEQ material.  Previously energy/density/variation only affected
         # generate_block(), so header macros appeared inert during LIVE play.
-        self._apply_global_macros(block, representation, kit_index)
-        if self.director.phrase.running:
+        self._apply_global_macros(
+            block, representation, kit_index, start_beat=motif_beat,
+            step_beats=self.sequence_step_beats(block, live=True),
+        )
+        if self.director_applies(block):
+            self.sync_voice_leading_settings()
             snap=self.director.snapshot()
             role=str(block.block_type).upper()
             rstate=self.director.role_state(role,snap)
@@ -1762,21 +2429,42 @@ class MusicEngine:
             # it here too thinned LIVE parts twice.  Only role density here.
             if rstate.activity_mode != "harmonic":
                 live_keep=self.director.bounded_combine(1.0,rstate.density,.12)
-                if self.director.decision_value(block.id,"live",slot=int(state.get("events",0))) > live_keep:
+                event_class, _importance = self.event_class_info(block, motif_beat, kit_index)
+                class_keep = 1.0 if event_class == ANCHOR else live_keep
+                if event_class == ORNAMENT:
+                    class_keep *= min(1.0, float(rstate.variation) * 2.0)
+                decision = self.director.rhythm_decision(block.id, motif_beat)
+                if event_class != ANCHOR and decision >= class_keep:
                     return self._live_rest(block)
             if representation.rhythm[0] > 0:
                 representation.velocity[0]=_clamp(representation.velocity[0] * (0.82 + 0.36*rstate.energy),0.0,1.0)
+                representation.velocity[0]=_clamp(
+                    representation.velocity[0] * self._phrase_tension_accent(rstate.tension, motif_beat),
+                    0.0, 1.0,
+                )
                 representation.duration[0]=max(0.03,representation.duration[0]*rstate.duration_factor)
-            if role not in PERCUSSIVE_TYPES and representation.rhythm[0] > 0:
-                representation.pitch[0] += rstate.register_shift
             if self.director.voice_leading and block.block_type not in PERCUSSIVE_TYPES:
                 representation.pitch[0]=round(self.voice_leading.resolve_pitch(str(block.id),representation.pitch[0]))
         self._apply_role_profile(block, representation, rng)
         if block.block_type not in PERCUSSIVE_TYPES and representation.pitch:
             representation.pitch[0] = self._quantize_pitch(block, representation.pitch[0])
-        self._apply_kit_output(block, representation, kit_index)
+        self._apply_kit_output(block, representation, kit_index, plan=plan)
         if not self.pattern_step_allowed(block, kit_index):
             return self._live_rest(block)
+        # Reject generator density before publishing it as a relation source
+        # or queuing parameter changes. A discarded hit must not leak out.
+        fill = self._fill_density_value(block)
+        if fill <= 0.0:
+            return self._live_rest(block)
+        if kit_source is None and (fill < 1.0 or self._event_variation_value(block, motif_beat) < .5):
+            event_class, _importance = self.event_class_info(block, motif_beat, kit_index)
+            keep = density_probability(event_class, fill, self._event_variation_value(block, motif_beat))
+            sample = deterministic_sample(
+                self.project.seed, block.id, "", motif_beat,
+                f"fill-density:{event_class}",
+            )
+            if sample >= keep:
+                return self._live_rest(block)
         block.outputs = representation.as_outputs()
         self._base_outputs[block.id] = representation.as_outputs()
         # LIVE blocks are not part of the initial generate() pass.  Re-apply
@@ -1785,10 +2473,6 @@ class MusicEngine:
         # the project-wide pass.
         if self._relation_participant(block):
             self.apply_relations()
-        self.collect_parameter_modulations(block, 0)
-        fill = self._fill_density_value(block)
-        if fill <= 0.0 or (kit_source is None and fill < 1.0 and rng.random() >= fill):
-            return self._live_rest(block)
         # Emit the *post-relation* event.  It used to be built from the
         # representation before relations, so Follow/Copy/groove/chord anchor
         # aimed at a LIVE block were computed but never heard.
@@ -1801,26 +2485,122 @@ class MusicEngine:
             root_pitch = self._quantize_pitch(block, root_pitch)
         velocity_out = self._stream_value(out.get("velocity", []), 0, 0.0)
         if velocity_out <= 0:
-            velocity_out = representation.velocity[0] if representation.velocity else velocity
+            return self._live_rest(block)
         duration_out = self._stream_value(out.get("duration", []), 0, 0.0)
         if duration_out <= 0:
-            duration_out = representation.duration[0] if representation.duration else live_gate
+            return self._live_rest(block)
+        self.collect_parameter_modulations(block, 0)
         event = {
             "pitch": root_pitch,
             "velocity": _clamp(velocity_out, 0.0, 1.0),
             "duration": duration_out,
             "interval": self._live_interval(block, rng),
             "rhythm": rhythm0,
+            "_composition_slot": int(kit_index),
         }
+        event_class, importance = self.event_class_info(block, motif_beat, kit_index)
+        event["event_class"] = event_class
+        event["importance"] = importance
         if block.block_type in ("CHORD", "PAD"):
             event["pitches"] = self._chord_pitches(block, root_pitch)
         event = self.harmonize_event(block, event, motif_beat)
+        if event is not None:
+            interval_beats = self.clock.beats_for_seconds(
+                float(event.get("interval", 0.25)), self.project.tempo
+            )
+            event = MusicalEvent.from_mapping(
+                event,
+                beat=motif_beat,
+                interval_beats=interval_beats,
+                source_id=block.id,
+                role=block.block_type,
+                channel=getattr(block, "midi_channel", None),
+                recompute_duration=True,
+            ).to_mapping()
+        self.relation_runtime.publish_source(block)
+        return event
+
+    def place_register_event(self, block, event, beat=None):
+        """Place whole events by octaves without changing their pitch classes."""
+        beat = self.clock.position_beats if beat is None else beat
+        if not event:
+            return event
+        context = self.composition_runtime.context_at(beat)
+        director_shift = (self.director.role_state(block.block_type, self.director._last_state).register_shift
+                          if self.director_applies(block) else 0.)
+        if not (context is not None or director_shift or (block.id, "role_center") in self.parameter_influence.entries):
+            return event
+        center = self.effective_register_center(block, beat)
+        # Resolve the scheduled section after Relations and before harmonic
+        # anchoring. Cached SEQ material may belong to a previous section.
+        if block.block_type in ROLE_PROFILES:
+            event = dict(event)
+            if isinstance(event.get("pitches"), (list, tuple)) and event["pitches"]:
+                base = int(block.midi_note) + block_root(self.project, block) % 12
+                width = max(6., float(block.parameters.get("role_width", ROLE_PROFILES[block.block_type]["pitch_range"])))
+                notes = [base + float(pitch) for pitch in event["pitches"]]
+                lo, hi = base + center - width / 2, base + center + width / 2
+                if not all(lo <= note <= hi and 0 <= note <= 127 for note in notes):
+                    first = math.ceil(max(lo - min(notes), -min(notes)) / 12.)
+                    last = math.floor(min(hi - max(notes), 127 - max(notes)) / 12.)
+                    if first <= last:
+                        shift = 12 * max(first, min(last, round((base + center - (min(notes) + max(notes)) / 2) / 12)))
+                        notes = [note + shift for note in notes]
+                    else:
+                        notes = VoiceLeading.resolve_chord(notes, notes, register=(lo, hi))
+                event["pitches"] = [float(note - base) for note in notes]
+                event["pitch"] = event["pitches"][0]
+            else:
+                event["pitch"] = self._role_pitch(block, float(event.get("pitch", 0.)), beat, runtime=True)
         return event
 
     def harmonize_event(self, block, event, beat=None):
         beat = self.clock.position_beats if beat is None else beat
+        if not event:
+            return event
         self.update_harmonic_context(beat)
-        return self.harmonic_runtime.apply(block, event, beat)
+        incoming = event
+        event = self.place_register_event(block, event, beat)
+        if event is not incoming and block.block_type in ROLE_PROFILES and not event.get("pitches"):
+            event["pitch"] = self._quantize_pitch(block, float(event.get("pitch", 0.)))
+        center = self.effective_register_center(block, beat)
+        strength_override = None
+        base_strength = _clamp(float(block.parameters.get("harmonic_strength", .75)), 0.0, 1.0)
+        strength_adjustment = 0.0
+        harmony_scale = 1.0
+        has_strength_control = False
+
+        if self.composition_runtime.enabled():
+            section_tension = self.composition_runtime.effective_tension(
+                beat, self.director.global_macro_values
+            )
+            if section_tension is not None:
+                # Higher section tension loosens chord-tone anchoring; lower
+                # tension increases stability. .5 is the neutral point.
+                strength_adjustment += (.5 - float(section_tension)) * .60
+                context = self.composition_runtime.context(beat)
+                settings = self.composition_runtime.block_settings(context["section"], block.id)
+                harmony_scale = settings["harmony"]
+                has_strength_control = True
+
+        # Phrase tension used to be calculated for the Director meter only.
+        # Feed that same live contour into the harmonic decision so a phrase
+        # actually becomes less chord-bound as it rises and more settled as it
+        # releases.  This is scoped to selected/running Director blocks and to
+        # the melodic roles whose harmonic anchoring uses harmonic_strength.
+        if (block.block_type in ("BASS", "MELODY")
+                and self.director_applies(block)
+                and self.harmonic_runtime.follows(block)):
+            phrase_tension = self.director.snapshot().tension
+            strength_adjustment += (.5 - float(phrase_tension)) * .60
+            has_strength_control = True
+
+        if has_strength_control:
+            strength_override = _clamp(
+                (base_strength + strength_adjustment) * harmony_scale, 0.0, 1.0
+            )
+        return self.harmonic_runtime.apply(block, event, beat, strength_override=strength_override,
+                                           center_override=center)
 
     def dialogue_event(self, block, event, beat=None):
         """Final accepted event: turn-taking after probability and mute gates."""
@@ -1843,24 +2623,29 @@ class MusicEngine:
         return harmony
 
     def _chord_pitches(self, block: Block, root_pitch: float) -> list[float]:
-        """Expand a harmonic role into a simultaneous diatonic voicing."""
+        """Expand a harmonic role into a cached, diatonic chord voicing."""
         if block.block_type not in ("CHORD", "PAD"):
             return [float(root_pitch)]
         p = block.parameters
         profile = ROLE_PROFILES.get(block.block_type, ROLE_PROFILES["CHORD"])
         size = max(1, min(4, int(p.get("harmony_size", profile.get("harmony_size", 3)))))
-        spread = max(0, int(p.get("harmony_spread", profile.get("harmony_spread", 7))))
+        spread = max(0, min(48, int(p.get("harmony_spread", profile.get("harmony_spread", 7)))))
         inversion = int(p.get("harmony_inversion", profile.get("harmony_inversion", 0)))
         root = self._root(block)
         scale = self._scale(block)
-
-        # Diatonic thirds: 1-3-5-7.  Scale quality therefore follows the
-        # selected Major/Minor/Dorian/etc. context automatically.
-        # Thirds are stacked on the scale degree the generated root falls on,
-        # so II/III/VI/VII chords keep the scale's quality.  Transposing one
-        # fixed chord shape onto every root produced chromatic chords
-        # (A-C#-E in C major).  ``chord_degree`` is an optional degree offset.
         offset = int(_as_float(p.get("chord_degree", p.get("harmony_degree", 0)), 0))
+        base = int(block.midi_note) + block_root(self.project, block) % 12
+        center = base + self.effective_register_center(block)
+        width = max(6.0, float(p.get("role_width", profile["pitch_range"])))
+        cache_key = (
+            int(block.id), str(block.block_type), round(float(root_pitch), 6), int(block.midi_note),
+            root, scale, size, spread, inversion, offset, round(float(center), 5), round(float(width), 5),
+        )
+        cached = self._chord_voicing_cache.get(cache_key)
+        if cached is not None:
+            return list(cached)
+
+        # Diatonic thirds: 1-3-5-7. Scale quality follows the selected key.
         degree = self._scale_degree(block, root_pitch) + offset
         pitches = [float(degree_to_note(degree + 2 * i, root, scale) - root) for i in range(size)]
         if spread > 0 and size > 1:
@@ -1878,23 +2663,16 @@ class MusicEngine:
             for _ in range(min(-inversion, size - 1)):
                 pitches[-1] -= 12.0
                 pitches = pitches[-1:] + pitches[:-1]
-        # Move the complete voicing as one object so intervals are never
-        # destroyed by role-register normalization.
-        lo = float(profile["register_min"])
-        hi = float(profile["register_max"])
-        anchor = float(profile["register_anchor"])
-        while max(pitches) > hi:
-            pitches = [x - 12.0 for x in pitches]
-        while min(pitches) < lo:
-            pitches = [x + 12.0 for x in pitches]
-        center = (pitches[0] + pitches[-1]) * 0.5
-        while center - anchor > 6.0 and min(pitches) - 12.0 >= lo:
-            pitches = [x - 12.0 for x in pitches]
-            center -= 12.0
-        while center - anchor < -6.0 and max(pitches) + 12.0 <= hi:
-            pitches = [x + 12.0 for x in pitches]
-            center += 12.0
-        return [float(_clamp(x, lo, hi)) for x in pitches]
+
+        notes = sorted(base + x for x in pitches)
+        shift = 12 * round((center - (notes[0] + notes[-1]) / 2) / 12)
+        reference = [note + shift for note in notes]
+        resolved = VoiceLeading.resolve_chord(notes, reference, register=(center-width/2, center+width/2))
+        result = tuple(float(note-base) for note in resolved)
+        if len(self._chord_voicing_cache) >= 1024:
+            self._chord_voicing_cache.pop(next(iter(self._chord_voicing_cache)))
+        self._chord_voicing_cache[cache_key] = result
+        return list(result)
 
 
     # ---- processes and relations ------------------------------------------
@@ -2059,96 +2837,26 @@ class MusicEngine:
         return x
 
     def relation_cycles(self) -> list[list[int]]:
-        """Return block-id cycles. Disabled relations do not participate."""
-        graph = {}
-        for r in self.project.relations:
-            if getattr(r, "enabled", True) and r.algorithm != 'Dialogue':
-                graph.setdefault(int(r.source_block), set()).add(int(r.destination_block))
-        cycles=[]
-        def visit(start):
-            stack=[(start,[start])]; seen=set()
-            while stack:
-                node,path=stack.pop()
-                for nxt in graph.get(node,()):
-                    if nxt == start and len(path)>1:
-                        cycles.append(path+[start]); continue
-                    if nxt not in path and (node,nxt) not in seen:
-                        seen.add((node,nxt)); stack.append((nxt,path+[nxt]))
-        for node in graph: visit(node)
-        unique=[]; keys=set()
-        for c in cycles:
-            k=tuple(c)
-            if k not in keys: keys.add(k); unique.append(c)
-        return unique
+        """Canonical stream-cycle diagnostics (feedback is delayed one step)."""
+        return self.relation_runtime.cycles()
 
     def apply_relations(self, skip_destination: int | None = None):
-        """Apply model relations with curve, probability and event delay.
+        """Rebuild from generator material, then evaluate the explicit graph.
 
-        Relation evaluation is deterministic for a fixed project seed and
-        relation position, so regenerating a project does not randomly flicker.
-        Cyclic graphs are allowed only as a diagnostic; each relation reads the
-        current snapshot and therefore never recursively evaluates another relation.
+        Built-in role shaping is the baseline; a visible matching route
+        replaces it. Explicit chains/fan-in do not depend on row order, and
+        repeating this method cannot advance feedback or accumulate amounts.
         """
+        # Restore every owner from the pre-relation snapshot.  Drum voices
+        # are first-class relation endpoints; the parent bus is rebuilt from
+        # those clean child snapshots before explicit routes are evaluated.
         for block in self.project.blocks:
-            base = self._base_outputs.get(block.id)
-            if base is not None:
-                block.outputs = {part: list(values) for part, values in base.items()}
-        # Built-in rhythm-first relations run from the clean snapshot before
-        # user-authored model relations. Rebuilding outputs therefore remains
-        # idempotent and does not accumulate previous relation passes.
+            for owner in (block, *(getattr(block, "drum_voices", None) or [])):
+                base = self._base_outputs.get(owner.id)
+                if base is not None:
+                    owner.outputs = {part: list(values) for part, values in base.items()}
+        for drum in self.project.blocks:
+            if str(getattr(drum, "block_type", "")).upper() == "DRUM" and getattr(drum, "drum_voices", None) is not None:
+                self._aggregate_drum_outputs(drum)
         self._apply_role_relations(skip_destination=skip_destination)
-        for ridx, relation in enumerate(self.project.relations):
-            if not getattr(relation, "enabled", True) or relation.algorithm == 'Dialogue':
-                continue
-            source = self.find_block(relation.source_block)
-            destination = self.find_block(relation.destination_block)
-            if source is None or destination is None:
-                continue
-            if skip_destination is not None and destination.id == skip_destination:
-                continue
-            src = source.outputs.get(relation.source_part, [])
-            if not src:
-                continue
-            dst = list(destination.outputs.get(relation.destination_part) or [])
-            n = len(dst) or len(src)
-            dst = (dst + [0.0] * n)[:n]
-            delay = max(0, int(getattr(relation, "delay", 0)))
-            # A LIVE destination holds one event: read the source at its
-            # current transport position instead of always at step 0.
-            base = self.source_positions.get(source.id, 0) if destination.mode == "LIVE" and (source.mode != "LIVE" or coordinated(source)) else 0
-            src = [src[(base + i - delay) % len(src)] for i in range(n)]
-            probability = _clamp(float(getattr(relation, "probability", 1.0)), 0.0, 1.0)
-            seed = self.project.seed + (int(getattr(relation, "id", 0)) or ridx + 1) * 104729
-            if destination.mode == "LIVE":
-                # One gate decision per LIVE event, not the same one forever.
-                seed += 7919 * int(self.live_state.get(destination.id, {}).get("events", 0))
-            rng = random.Random(seed)
-            a = self._relation_curve(float(relation.amount), getattr(relation, "curve", "Linear"))
-            if probability < 1.0:
-                gate = [rng.random() < probability for _ in range(n)]
-            else:
-                gate = [True] * n
-            result=[]
-            for s,d,g in zip(src,dst,gate):
-                if not g:
-                    result.append(d); continue
-                if relation.algorithm in ("Copy", "Mix", "Follow"):
-                    result.append(d * (1-a) + s*a)
-                elif relation.algorithm == "Quantize To":
-                    result.append(d + (round(s) - d) * a)
-                elif relation.algorithm == "Modulate":
-                    result.append(d + s * a)
-                elif relation.algorithm == "Trigger":
-                    threshold = max(0.0, 1.0 - a)
-                    result.append(1.0 if s > threshold else 0.0)
-                else:
-                    result.append(s)
-            if relation.destination_part == "pitch" and destination.block_type not in PERCUSSIVE_TYPES:
-                # Relations must not leave the destination's scale.
-                result = [self._quantize_pitch(destination, v) for v in result]
-            destination.outputs[relation.destination_part] = result
-            if relation.destination_part == "rhythm":
-                self._sync_rhythm_dependents(destination)
-
-
-
+        self.relation_runtime.apply(skip_destination=skip_destination)

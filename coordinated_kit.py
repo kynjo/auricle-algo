@@ -4,10 +4,15 @@ import math
 import re
 
 from auricle_drum import kit_random, kit_value
+from musical_clock import MusicalGrid
+from drum_rhythm import (MAP_DEFAULTS, RhythmContext, apply_voice_links, compose_map,
+                         integer, motif_states, normalized_links, resolve_exclusions,
+                         rhythm_engine, unit)
 
 ROLES = (("Kick", "kick"), ("Snare", "snare"), ("Closed hat", "closed_hat"),
          ("Open hat", "open_hat"), ("Clap", "clap"), ("Tom", "tom"),
          ("Perc", "perc"), ("Free", "free"))
+_ROLE_KEYS = frozenset(key for _, key in ROLES)
 STYLES = (("Straight", "straight"), ("Half-time", "half_time"), ("Broken", "broken"))
 STEP_BEATS = .25
 METERS = (("2/4", (4, 4)), ("3/4", (4, 4, 4)), ("4/4", (4, 4, 4, 4)),
@@ -69,8 +74,9 @@ def infer_role(note, name=""):
 
 
 def voice_role(voice):
-    role = str(voice.parameters.get("kit_role", infer_role(voice.midi_note, voice.name)))
-    return role if role in {key for _, key in ROLES} else "perc"
+    role = str(voice.parameters["kit_role"] if "kit_role" in voice.parameters
+               else infer_role(voice.midi_note, voice.name))
+    return role if role in _ROLE_KEYS else "perc"
 
 
 def coordinated(drum, voice=None):
@@ -92,6 +98,7 @@ class KitStep:
     accent: float = 1.0
     fill: bool = False
     anchor: bool = False
+    importance: float = .5
 
 
 @dataclass
@@ -103,6 +110,9 @@ class KitPlan:
     steps_per_bar: int = 16
     groups: tuple = (4, 4, 4, 4)
     roles: dict = None
+    bar_states: tuple = ()
+    engine: str = "classic"
+    context: RhythmContext = RhythmContext()
 
     def at(self, voice_id, slot):
         row = self.rows.get(voice_id)
@@ -126,19 +136,25 @@ class KitCoordinator:
     def __init__(self):
         self.plans = {}
 
-    def plan(self, drum, seed, beat):
+    def plan(self, drum, seed, beat, context=None):
+        context = (context or RhythmContext()) if rhythm_engine(drum) == "map" else RhythmContext()
         groups = meter_groups(drum)
         steps = sum(groups)
         length = phrase_bars(drum) * steps
-        cycle = max(0, int(math.floor(max(0., beat) / (length * STEP_BEATS) + 1e-8)))
+        cycle = max(0, MusicalGrid(STEP_BEATS).cycle_index(max(0., beat), length))
         style = str(drum.parameters.get("kit_style", "straight"))
         if style not in {key for _, key in STYLES}:
             style = "straight"
         roster = tuple(sorted((int(v.id), voice_role(v), bool(v.muted)) for v in drum.drum_voices))
         tuning = tuple(creative_value(drum, key) for key in CREATIVE_DEFAULTS)
         complexity, syncopation, toms, variation = tuning
-        variant = int(drum.parameters.get("kit_variant", 0))
-        token = (int(seed), int(drum.id), cycle, length, groups, style, kit_value(drum, "kit_fill"), roster, tuning, variant)
+        variant = integer(drum.parameters.get("kit_variant", 0), 0, 0, 2147483647)
+        engine = rhythm_engine(drum)
+        musical = (engine, tuple(unit(drum.parameters, key, default) for key, default in MAP_DEFAULTS.items()),
+                   bool(drum.parameters.get("kit_motif_enabled", False)),
+                   integer(drum.parameters.get("kit_motif_return", 4), 4, 2, 16),
+                   bool(drum.parameters.get("kit_links_enabled", False)), normalized_links(drum), context)
+        token = (int(seed), int(drum.id), cycle, length, groups, style, kit_value(drum, "kit_fill"), roster, tuning, variant, musical)
         previous = self.plans.get(drum.id)
         if previous is not None and previous.token == token:
             return previous
@@ -147,8 +163,18 @@ class KitCoordinator:
         owners = {role: [vid for vid, r, muted in roster if r == role and not muted] for _, role in ROLES}
         shared_seed = int(seed) + int(drum.id) * 1009 + variant * 7919
         start = cycle * length
+        states = motif_states(drum.parameters, shared_seed, start, steps, phrase_bars(drum), context)
         tail = groups[-1]
-        fill_slots = {pos for pos in range(length - tail, length)
+        fill_ends = {length}
+        if engine == "map" and drum.parameters.get("kit_motif_enabled", False):
+            fill_ends.update((bar + 1) * steps for bar, state in enumerate(states) if state == "Fill")
+        if engine == "map" and context.end_slot is not None:
+            local_end = context.end_slot - start
+            if 0 < local_end <= length:
+                fill_ends.add(local_end)
+        fill_slots = {pos for end in fill_ends for pos in range(max(0, end - tail), end)
+                      if start + pos >= context.origin_slot
+                      and (context.end_slot is None or start + pos < context.end_slot)
                       if kit_random(shared_seed, start + pos, 72) < kit_value(drum, "kit_fill")}
         boundaries = [sum(groups[:i]) for i in range(len(groups))]
         half = boundaries[len(groups) // 2]
@@ -164,12 +190,16 @@ class KitCoordinator:
         if groups == (4, 4, 4, 4) and style == "broken":
             kick_extra = (3, 6, 14)
 
-        def assign(role, pos, force=False, accent=1., fill=False, anchor=False):
+        def assign(role, pos, force=False, accent=1., fill=False, anchor=False, importance=None):
             ids = owners[role]
             if ids:
                 owner = ids[int(kit_random(shared_seed, pos // steps, 71) * len(ids)) % len(ids)]
                 old = rows[owner][pos]
-                rows[owner][pos] = KitStep(True, force or old.force, accent, fill or old.fill, anchor or old.anchor)
+                if importance is None:
+                    importance = 1.0 if anchor else (.70 if force else .35)
+                rows[owner][pos] = KitStep(True, force or old.force, accent, fill or old.fill,
+                                           anchor or old.anchor,
+                                           1.0 if anchor or old.anchor else importance)
 
         for pos in range(length):
             step = pos % steps
@@ -179,8 +209,14 @@ class KitCoordinator:
                 assign("snare" if owners["snare"] else "clap", pos, True, 1.08, anchor=True)
             elif step in {max(0, b - 1) for b in backbeats} | {steps - 1}:
                 assign("snare", pos, False, .65)
-            assign("closed_hat", pos, step % 2 == 0, .92 if step in boundaries else .68,
-                   anchor=step % 2 == 0)
+            # The kit editor's Keep beat mask retains the eighth-note hat
+            # pulse. Rhythm Intelligence classifies non-downbeat hat pulses
+            # as Support, so they remain density/probability-aware.
+            hat_anchor = step % 2 == 0
+            hat_support = step % 2 == 0
+            assign("closed_hat", pos, hat_support, .92 if step in boundaries else .68,
+                   anchor=hat_anchor,
+                   importance=1.0 if step % 4 == 0 else (.70 if hat_support else .25))
             if step in (max(1, half - 2), steps - 2):
                 assign("tom", pos, False, .8)
             if step in {b + g - 1 for b, g in zip(boundaries, groups)}:
@@ -224,7 +260,7 @@ class KitCoordinator:
                 for i in pool[:count]:
                     for vid in owners["closed_hat"]:
                         rows[vid][base + i] = KitStep()
-                    assign("open_hat", base + i, True, .88, anchor=True)
+                    assign("open_hat", base + i, True, .88, anchor=True, importance=.42)
 
             for role, amount, lane in (("kick", complexity * .7, 82), ("snare", complexity * .6, 83),
                                        ("closed_hat", complexity, 84), ("perc", complexity, 85),
@@ -242,6 +278,9 @@ class KitCoordinator:
                         continue
                     assign(role, base + i, True, .78 if role == "tom" else .58 + .2 * amount)
 
+        if engine == "map":
+            compose_map(drum, shared_seed, start, steps, groups, owners, rows, KitStep, states)
+
         for pos in sorted(fill_slots):
             backbeat = [vid for vid in owners["snare"] + owners["clap"] if rows[vid][pos].anchor]
             pool = sorted(owners["snare"] + owners["clap"] + owners["tom"] + owners["perc"])
@@ -250,7 +289,10 @@ class KitCoordinator:
                 row[pos] = KitStep()
             if pool:
                 owner = backbeat[0] if backbeat else pool[(cycle + pos - (length - tail)) % len(pool)]
-                rows[owner][pos] = KitStep(True, True, .82 + .3 * (pos - length + tail) / max(1, tail - 1), True, bool(backbeat))
-        result = KitPlan(start, length, token, rows, steps, groups, roles)
+                end = min(end for end in fill_ends if end > pos)
+                rows[owner][pos] = KitStep(True, True, .82 + .3 * (pos - end + tail) / max(1, tail - 1), True, bool(backbeat), .8)
+        apply_voice_links(drum, shared_seed, start, rows, KitStep, groups)
+        resolve_exclusions(rows, roles, KitStep)
+        result = KitPlan(start, length, token, rows, steps, groups, roles, states, engine, context)
         self.plans[drum.id] = result
         return result

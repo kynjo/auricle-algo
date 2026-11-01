@@ -14,6 +14,11 @@ class Motif:
     velocity: list[float] = field(default_factory=list)
     variations: dict[str, Any] = field(default_factory=dict)
     step_beats: float = .25
+    # Lineage is metadata only: transformations always produce a new Motif and
+    # never mutate the source material.
+    parent_id: str = ""
+    transformation: str = ""
+    transform_amount: float = 1.0
 
     @property
     def steps(self):

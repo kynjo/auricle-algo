@@ -4,8 +4,10 @@ from pathlib import Path
 import sys
 
 REQUIRED_ASSETS = (
+    "auricle_logo.svg",
     "auricle_logo.png", "auricle_logo2.png", "auricle_icon.png",
     "auricle.ico", "auricle.icns",
+    "DRUM.svg", "BASS.svg", "MELODY.svg", "PAD.svg", "CHORD.svg",
 )
 
 

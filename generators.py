@@ -120,7 +120,7 @@ def _tile(values: list, length: int) -> list:
 
 
 def euclidean(steps: int, pulses: int, rotation: int = 0) -> list[float]:
-    """Bjorklund-style even distribution of pulses (bucket algorithm)."""
+    """Even pulse distribution, anchored on step zero before left rotation."""
     steps = max(0, int(steps))
     pulses = max(0, min(steps, int(pulses)))
     if not steps:
@@ -129,15 +129,9 @@ def euclidean(steps: int, pulses: int, rotation: int = 0) -> list[float]:
         return [0.0] * steps
     if pulses == steps:
         return [1.0] * steps
-    pattern = []
-    bucket = 0
-    for _ in range(steps):
-        bucket += pulses
-        if bucket >= steps:
-            bucket -= steps
-            pattern.append(1.0)
-        else:
-            pattern.append(0.0)
+    # Integer residues give exactly `pulses` hits without floating boundary
+    # errors. Rotation has the same left-shift convention as other generators.
+    pattern = [1.0 if (i * pulses) % steps < pulses else 0.0 for i in range(steps)]
     return _rotate(pattern, rotation)
 
 
@@ -200,18 +194,30 @@ def fibonacci_sequence(length: int) -> list[float]:
 
 
 def fibonacci_rhythm(length: int, density: float = 0.5, offset: int = 0) -> list[float]:
-    """Use Fibonacci positions modulo length, producing sparse non-periodic accents."""
-    n = max(1, int(length))
-    density = max(0.05, min(1.0, float(density)))
-    target = max(1, int(n * density))
+    """Fibonacci residue priorities, with golden-ratio completion of missing cells.
+
+    Increasing density only adds hits, from silence to a completely full
+    pattern. Repeated residues cannot stall the requested hit count.
+    """
+    n = max(0, int(length))
+    density = max(0.0, min(1.0, float(density)))
+    target = int(n * density + 1e-9)
     out = [0.0] * n
-    seen = set()
-    a, b = 1, 2
-    while a < n * 8 and len(seen) < target:
-        seen.add((a + int(offset)) % n)
-        a, b = b, a + b
-    for p in seen:
-        out[p] = 1.0
+    if not target:
+        return out
+    positions, seen, states = [], set(), set()
+    a, b = 1 % n, 2 % n
+    while (a, b) not in states and len(positions) < target:
+        states.add((a, b))
+        if a not in seen:
+            positions.append(a)
+            seen.add(a)
+        a, b = b, (a + b) % n
+    if len(positions) < target:
+        golden = (5 ** .5 - 1) / 2
+        positions.extend(sorted((i for i in range(n) if i not in seen), key=lambda i: (i * golden) % 1))
+    for position in positions[:target]:
+        out[(position + int(offset)) % n] = 1.0
     return out
 
 
@@ -502,55 +508,5 @@ def fixed_pattern(length: int, pattern=None) -> list[float]:
     return [float(base[i % len(base)]) for i in range(max(0, int(length)))]
 
 
-def mutate_sequence(values: list[float], mutator, rng: random.Random) -> list[float]:
-    if not values:
-        return values
-    name, amount = mutator.name, mutator.amount
-    if name == "Rotate":
-        return _rotate(values[:], int(amount * len(values)))
-    if name == "Reverse":
-        return list(reversed(values))
-    if name == "Invert":
-        maximum, minimum = max(values), min(values)
-        return [maximum - (v - minimum) for v in values]
-    if name == "Transpose":
-        semitones = round((amount - 0.5) * 24)
-        return [v + semitones for v in values]
-    if name == "Stretch":
-        factor = max(1, round(1 + amount * 3))
-        result = []
-        for v in values:
-            result.extend([v] * factor)
-        return result[:len(values)]
-    if name == "Compress":
-        factor = max(1, round(1 + amount * 3))
-        result = [values[i] for i in range(0, len(values), factor)]
-        while len(result) < len(values):
-            result.append(result[-1])
-        return result[:len(values)]
-    if name == "Probability":
-        return [v if rng.random() < amount else 0.0 for v in values]
-    if name == "Mutate":
-        return [v + rng.choice([-2, -1, 1, 2]) if rng.random() < amount else v for v in values]
-    if name == "Shuffle":
-        result = values[:]
-        for _ in range(max(1, round(amount * len(result) * 2))):
-            a, b = rng.randrange(len(result)), rng.randrange(len(result))
-            result[a], result[b] = result[b], result[a]
-        return result
-    if name == "Mirror":
-        split = int(amount * (len(values) - 1))
-        left = values[:split + 1]
-        return (list(reversed(left)) + values[split + 1:])[:len(values)]
-    if name == "Humanize":
-        return [v + rng.uniform(-amount * 2, amount * 2) if v else v for v in values]
-    if name == "Octave":
-        octaves = round((amount - .5) * 4)
-        return [v + octaves * 12 for v in values]
-    if name == "Threshold":
-        threshold = amount * 12
-        return [v if abs(v) >= threshold else 0.0 for v in values]
-    if name == "Scale":
-        factor = .25 + amount * 1.5
-        return [v * factor for v in values]
-    return values[:]
+# Public generator API retains this import for callers of earlier releases.
+from mutators import mutate_sequence  # noqa: F401,E402

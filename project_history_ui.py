@@ -7,7 +7,7 @@ from pathlib import Path
 from shiboken6 import isValid
 from PySide6.QtCore import QObject, QEvent, QTimer, Qt, QStandardPaths
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QApplication, QSlider, QMessageBox, QInputDialog, QWidget
+from PySide6.QtWidgets import QApplication, QInputDialog, QWidget
 from auricle_persistence import project_from_dict
 from project_history import ProjectHistory, RecoveryStore, document_state, process_alive
 
@@ -33,6 +33,10 @@ class HistoryController(QObject):
         self.commit_timer = QTimer(self)
         self.commit_timer.setSingleShot(True)
         self.commit_timer.timeout.connect(self.flush)
+        self.wheel_timer = QTimer(self)
+        self.wheel_timer.setSingleShot(True)
+        self.wheel_timer.setInterval(450)
+        self.wheel_timer.timeout.connect(self._finish_wheel)
         self.recovery_timer = QTimer(self)
         self.recovery_timer.setSingleShot(True)
         self.recovery_timer.setInterval(2000)
@@ -51,7 +55,14 @@ class HistoryController(QObject):
         self.sync_actions()
 
     def snapshot(self):
-        with self.host.transport._state_lock:
+        # A history snapshot must describe one committed model state. GUI edits
+        # are first drained on the transport lock; the scheduler cannot mutate
+        # the engine while document_state serializes it.
+        panel = getattr(getattr(self.host, 'composition_panel', None), 'automation_panel', None)
+        if panel is not None:
+            panel.flush()
+        with self.host.transport._transport_lock:
+            self.host.transport._drain_gui_commands(notify=False)
             return document_state(self.host.project, self.host.engine)
 
     def changed(self):
@@ -96,6 +107,9 @@ class HistoryController(QObject):
         except OSError as exc: self.host.set_message('Recovery cleanup failed: ' + str(exc))
 
     def move(self, redo=False):
+        # A user may hit Undo before the next 2-ms scheduler tick. Commit any
+        # pending GUI commands first so Undo sees the latest complete state.
+        self.host.transport.flush_gui_commands(notify=True)
         self.flush()
         if not (self.history.can_redo if redo else self.history.can_undo): return
         before = self.snapshot()
@@ -112,6 +126,8 @@ class HistoryController(QObject):
         try:
             with host.transport._state_lock:
                 running = host.transport.running
+                playback_mode = host.transport.playback_mode
+                composition_position = host.transport.composition_position
                 position = host.engine.clock.position_beats
                 active = bool(host.engine.performance.active or host.engine.director.phrase.running)
                 message = 'Redo' if redo else 'Undo'
@@ -119,7 +135,10 @@ class HistoryController(QObject):
                     host.set_message(message)
                 else:
                     host._install_project(project_from_dict(state, normalize=False), host.current_path,
-                                          message, selection=(selected, voice))
+                                          message, selection=(selected, voice),
+                                          playback_mode=playback_mode if running else None,
+                                          composition_position=composition_position)
+                host.transport.composition_position = composition_position
                 if running:
                     # Keep musical time; an undo must not restart every part at bar 1.
                     now = time.monotonic()
@@ -135,6 +154,7 @@ class HistoryController(QObject):
                                 for b in data.get('blocks', [])]
                     if ports(before) != ports(state):
                         host.transport.refresh_ports()
+                host._sync_transport_buttons()
                 if active: host.set_message(('Redo' if redo else 'Undo') + ' · performance gestures stopped')
         finally:
             self.restoring = False
@@ -197,19 +217,31 @@ class HistoryController(QObject):
         if not isinstance(obj, QWidget) or (obj.window() is not self.host and not self.host.isAncestorOf(obj)):
             return False
         parameter = getattr(obj, '_auricle_parameter', None)
-        if parameter and ((kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton
+        # Knobs own their context menu: it contains MIDI Learn / Clear Mapping.
+        # The application-wide history filter used to consume every ContextMenu
+        # event first and open Parameter influences instead, making the knob's
+        # MIDI Learn action unreachable. Let Knob.contextMenuEvent handle it.
+        if parameter and kind == QEvent.ContextMenu and getattr(obj, '_auricle_has_midi_learn_menu', False):
+            return False
+        if parameter and kind == QEvent.ContextMenu and obj.contextMenuPolicy() == Qt.CustomContextMenu:
+            return False
+        # Parameter bindings also belong to selectors, text fields and toggles.
+        # Only a knob has the bottom numeric readout that opens influences.
+        if parameter and ((getattr(obj, '_auricle_has_midi_learn_menu', False)
+                           and kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton
                            and event.position().y() >= obj.height() - 21)
                           or kind == QEvent.ContextMenu):
             self.flush()
             self.show_influences(*parameter)
             return True
         if kind == QEvent.MouseButtonPress:
+            self.wheel_timer.stop()
             self.flush()
             self.serial += 1
             self.group = ('press', self.serial)
         elif kind == QEvent.MouseButtonRelease:
             # Flush after clicked/valueChanged and any same-turn model updates.
-            QTimer.singleShot(0, self._end_gesture)
+            QTimer.singleShot(0, self, self._end_gesture)
         elif kind == QEvent.Wheel:
             now = time.monotonic()
             if self.wheel != id(obj) or now - self.last_wheel > .4:
@@ -217,8 +249,9 @@ class HistoryController(QObject):
                 self.serial += 1
             self.wheel, self.last_wheel = id(obj), now
             self.group = ('wheel', self.serial)
-            QTimer.singleShot(450, self._finish_wheel)
+            self.wheel_timer.start()
         elif kind == QEvent.KeyPress and not event.isAutoRepeat():
+            self.wheel_timer.stop()
             self.flush()
             self.serial += 1
             self.group = ('key', self.serial)
@@ -228,11 +261,13 @@ class HistoryController(QObject):
         if time.monotonic() - self.last_wheel >= .4: self._end_gesture()
 
     def _end_gesture(self):
+        self.wheel_timer.stop()
         self.flush()
         self.group = None
 
     def close(self):
         self.commit_timer.stop()
+        self.wheel_timer.stop()
         self.recovery_timer.stop()
         self._clear_checkpoint()
         QApplication.instance().removeEventFilter(self)

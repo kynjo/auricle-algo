@@ -116,6 +116,7 @@ class RolePerformanceState:
     duration_factor: float
     variation: float
     activity_mode: str = "notes"
+    tension: float = .35
 
 # Backwards-compatible name used by existing tests/imports.
 DirectorSnapshot = PerformanceState
@@ -236,9 +237,10 @@ class MusicDirector:
         register=state.register_shift*c["register"]
         duration=1.0 + (state.duration_factor-1.0)*c["duration"]
         variation=_clamp(state.variation*c["variation"]*v_mul)
+        tension=_clamp(state.tension)
 
         activity_mode="harmonic" if role in ("PAD","CHORD") else ("pulse" if role in ("DRUM","PERCUSSION") else "notes")
-        return RolePerformanceState(energy,density,register,probability,max(.30,min(2.2,duration)),variation,activity_mode)
+        return RolePerformanceState(energy,density,register,probability,max(.30,min(2.2,duration)),variation,activity_mode,tension)
 
     def decision_value(self, block_id: int, lane: str="density", beat: float|None=None, slot: int=0) -> float:
         """Stable pseudo-random value for a musical decision window.
@@ -250,10 +252,24 @@ class MusicDirector:
         import hashlib
         pos=self.phrase.position_beats if beat is None else float(beat)
         window=max(.25,float(self.decision_window_beats))
-        window_index=int(max(0.0,pos)//window)
+        window_index=int((max(0.0,pos) + 1e-9)//window)
         token=f"{self.project_seed}|{self.phrase.phrase_id}|{int(block_id)}|{lane}|{window_index}|{int(slot)}"
         raw=hashlib.blake2b(token.encode("utf-8"),digest_size=8).digest()
         return int.from_bytes(raw,"big") / float((1<<64)-1)
+
+    def rhythm_decision(self, block_id: int, beat: float) -> float:
+        """Density decision at an absolute musical position, in both modes.
+
+        Slots are musical ticks (960 per quarter note), not generator calls.
+        Rests, subdivisions and a SEQ/LIVE switch therefore cannot move the
+        decision to a different window or reshuffle it.
+        """
+        tick = max(0, int(round(float(beat) * 960)))
+        position = tick / 960.0
+        window = max(.25, float(self.decision_window_beats))
+        start = int((position + 1e-9) // window) * window
+        slot = int(round((position - start) * 960))
+        return self.decision_value(block_id, "density", position, slot)
 
     @staticmethod
     def bounded_combine(base: float, performance: float, floor: float=.12) -> float:

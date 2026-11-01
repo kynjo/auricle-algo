@@ -9,6 +9,9 @@ from dataclasses import asdict, fields
 
 from auricle_catalogs import apply_role_defaults
 from auricle_model import Block, DrumVoice, Mutator, Process, Project, Relation, ensure_drum_voices
+from composition_planner import default_composition, normalize_composition
+from midi_expression import normalize_expression, normalize_midi_sync
+from midi_learn import normalize_mappings
 
 def _from_dict(cls, data: dict):
     """Build a dataclass from JSON, ignoring keys this version does not know."""
@@ -20,6 +23,8 @@ def _drum_voice_from_dict(data: dict) -> DrumVoice:
     voice = _from_dict(DrumVoice, data)
     voice.mutators = [_from_dict(Mutator, item) for item in data.get("mutators", [])]
     voice.processes = [_from_dict(Process, item) for item in data.get("processes", [])]
+    raw_expression = data.get("midi_expression", {})
+    voice.midi_expression = normalize_expression(raw_expression) if raw_expression else {}
     return voice
 
 
@@ -71,10 +76,15 @@ def project_from_dict(data: dict, normalize=True) -> Project:
             block = _from_dict(Block, payload)
             block.mutators = [_from_dict(Mutator, m) for m in payload.get("mutators", [])]
             block.processes = [_from_dict(Process, p) for p in payload.get("processes", [])]
+            raw_expression = payload.get("midi_expression", {})
+            block.midi_expression = normalize_expression(raw_expression) if raw_expression else {}
             voices = payload.get("drum_voices")
             block.drum_voices = [_drum_voice_from_dict(v) for v in voices] if voices is not None else None
             restored.blocks.append(block)
         restored.relations = [_from_dict(Relation, r) for r in data.get("relations", [])]
+        restored.midi_sync = normalize_midi_sync(getattr(restored, "midi_sync", {}))
+        restored.midi_mappings = normalize_mappings(getattr(restored, "midi_mappings", []))
+        restored.midi_input_port = str(getattr(restored, "midi_input_port", "") or "")
         return restored
     blocks = []
     for index, b in enumerate(data.get("blocks", []), start=1):
@@ -98,6 +108,7 @@ def project_from_dict(data: dict, normalize=True) -> Project:
             color=b.get("color", ""),
             muted=bool(b.get("muted", False)),
             drum_voices=[_drum_voice_from_dict(voice) for voice in voice_payload] if voice_payload is not None else None,
+            midi_expression=normalize_expression(b.get("midi_expression", {})) if b.get("midi_expression") else {},
         ))
         apply_role_defaults(blocks[-1])
         if blocks[-1].block_type == "DRUM":
@@ -127,8 +138,14 @@ def project_from_dict(data: dict, normalize=True) -> Project:
         macros=data.get("macros", []),
         performance=dict(data.get("performance", {})),
         motifs=dict(data.get("motifs", {})),
+        motif_memory=dict(data.get("motif_memory", {})),
+        midi_sync=normalize_midi_sync(data.get("midi_sync", {})),
+        midi_mappings=normalize_mappings(data.get("midi_mappings", [])),
+        midi_input_port=str(data.get("midi_input_port", "") or ""),
         phrase_state=dict(data.get("phrase_state", {})),
         harmonic_plan=dict(data.get("harmonic_plan", {})),
+        parameter_policies=dict(data.get("parameter_policies", {})),
+        composition=normalize_composition(data.get("composition", default_composition())),
     )
 
 

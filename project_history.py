@@ -22,6 +22,8 @@ def document_state(project, engine=None):
                    if f.name not in ('outputs', 'parameters', 'drum_voices', 'mutators', 'processes')}
         payload['parameters'] = (engine.parameter_influence.document_parameters(block)
                                  if engine is not None else deepcopy(block.parameters))
+        if engine is not None:
+            payload.update(engine.parameter_influence.document_attributes(block))
         payload['mutators'] = [asdict(m) for m in block.mutators]
         payload['processes'] = [asdict(p) for p in block.processes]
         if hasattr(block, 'drum_voices'):
@@ -38,6 +40,7 @@ def document_state(project, engine=None):
             settings['enabled'] = False
     if engine is not None:
         data['motifs'] = {key: asdict(value) for key, value in engine.director.motifs.motifs.items()}
+        data['motif_memory'] = engine.motif_development.export_memory()
     return data
 
 

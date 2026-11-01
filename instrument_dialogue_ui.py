@@ -3,6 +3,8 @@ from PySide6.QtCore import Qt, QRectF
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QGridLayout, QLabel, QComboBox, QSizePolicy
 
+from help_tooltips import bind_controls, bind_help
+
 from instrument_dialogue import METERS, REPLIES, settings
 
 
@@ -57,6 +59,7 @@ class DialogueControls(QWidget):
                                               ('reply', 'Reply'), ('follow', 'Follow · %'))):
             caption = QLabel(label); caption.setObjectName('muted')
             grid.addWidget(caption, 0, column)
+            bind_help(caption, key, "dialogue")
             if key in ('meter', 'reply'):
                 control = QComboBox()
                 control.addItems(METERS if key == 'meter' else REPLIES)
@@ -87,10 +90,12 @@ class DialogueControls(QWidget):
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
         self.sync()
+        bind_controls(self.controls, "dialogue")
 
     def sync(self):
-        self._updating = True
         config = settings(self.row.relation)
+        self._draft_config = dict(config)
+        self._updating = True
         try:
             for key, control in self.controls.items():
                 if isinstance(control, QComboBox):
@@ -107,23 +112,38 @@ class DialogueControls(QWidget):
         host, relation = self.row.editor.host, self.row.relation
         if not any(r is relation for r in host.project.relations):
             return
-        with host.transport._state_lock:
-            config = settings(relation)
-            for key, control in self.controls.items():
-                config[key] = control.currentText() if isinstance(control, QComboBox) else control.value() / (100 if key == 'follow' else 1)
-            relation.parameters = {**(relation.parameters if isinstance(relation.parameters, dict) else {}), **config}
-        host._mark_dirty()
+        config = dict(getattr(self, '_draft_config', settings(relation)))
+        for key, control in self.controls.items():
+            config[key] = control.currentText() if isinstance(control, QComboBox) else control.value() / (100 if key == 'follow' else 1)
+        self._draft_config = config
+        relation_id = int(relation.id)
+        project = host.project
+        def commit():
+            if host.project is not project:
+                return
+            current = next((item for item in project.relations if int(item.id) == relation_id), None)
+            if current is None:
+                return
+            current.parameters = {**(current.parameters if isinstance(current.parameters, dict) else {}), **config}
+            host.engine.apply_relations()
+        host._mark_pending_dirty()
+        host.transport.enqueue_gui_command(
+            commit, key=("instrument-dialogue", id(project), relation_id),
+            notification={"dirty": True, "relations": True}, label="Instrument Dialogue edit")
         self.controls['follow'].setEnabled(config['reply'] != 'Own phrase')
-        self.row.update_summary()
-        self.update_runtime()
 
     def update_runtime(self):
         host, relation = self.row.editor.host, self.row.relation
         if relation.algorithm != 'Dialogue':
             return
-        with host.transport._state_lock:
+        lock = host.transport._transport_lock
+        if not lock.acquire(blocking=False):
+            return
+        try:
             state = host.engine.dialogue_runtime.status(relation, host.engine.clock.position_beats)
             running = host.transport.running
+        finally:
+            lock.release()
         if 'total' not in state:
             return
         self.timeline.state = {**state, 'running': running}
@@ -136,3 +156,4 @@ class DialogueControls(QWidget):
             text = f"{'PLAY' if running else 'STOP'} · {state['phase']}: {who} · {state['remaining']:.1f} beats left"
         if self.status.text() != text:
             self.status.setText(text)
+

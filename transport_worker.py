@@ -41,15 +41,25 @@ class TransportWorker:
         next_plan = time.monotonic()
         while not self._stop.is_set():
             now=time.monotonic()
+            # Transport.tick reads the current musical clock and already skips
+            # missed grid slots. Replaying stale polling ticks only starves UI
+            # edits waiting for the shared state lock.
+            if next_plan < now - self.interval:
+                next_plan = now
             while next_plan < now + self.lookahead:
                 self.schedule_tick(next_plan)
                 next_plan += self.interval
-            self._dispatch_due(now)
+            self._dispatch_due(now, coalesce_ticks=True)
             self._stop.wait(min(self.interval,0.002))
 
-    def _dispatch_due(self, now=None):
+    def _dispatch_due(self, now=None, *, coalesce_ticks=False):
         """Run due callbacks while keeping the scheduler alive on failure."""
-        for callback in self.queue.pop_due(now):
+        callbacks = self.queue.pop_due(now)
+        last_tick = max((i for i, callback in enumerate(callbacks)
+                         if callback == self.transport.tick), default=-1) if coalesce_ticks else -1
+        for index, callback in enumerate(callbacks):
+            if coalesce_ticks and callback == self.transport.tick and index != last_tick:
+                continue
             try:
                 callback()
             except Exception:

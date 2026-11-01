@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from itertools import product
 
 @dataclass
 class Voice:
@@ -24,24 +26,40 @@ class VoiceLeading:
 
     @staticmethod
     def resolve_chord(notes, previous=None, *, register=None):
-        """Choose a register without altering any chord pitch class/interval.
+        """Place distinct chord voices, preserving pitch classes and inversion.
 
-        No leap clamp: clamping individual voices can create non-chord tones.
-        An explicit inversion is preserved; the whole voicing moves by octaves.
-        When supplied, the fixed register takes priority over proximity to the
-        previous chord, which otherwise lets repeated progressions drift. If
-        the voicing is too wide, minimize its largest register overhang instead
-        of clipping or dropping chord tones.
+        Keep an authored voicing when an octave translation fits the register.
+        Otherwise fold voices by octaves, keeping their pitch-class order.
+        If the requested width cannot contain the chord, choose the smallest
+        overhang; never clip several voices to a shared register boundary.
         """
         notes = sorted(int(round(note)) for note in notes)
-        candidates = [[note + 12*octave for note in notes] for octave in range(-11, 12)]
-        candidates = [chord for chord in candidates if min(chord) >= 0 and max(chord) <= 127]
-        if not candidates: return notes
+        if not notes: return []
+        # Small scales can stack the same pitch class twice; an inversion
+        # must keep those as separate octaves, never as duplicate MIDI notes.
+        for i in range(1, len(notes)):
+            while notes[i] <= notes[i-1]: notes[i] += 12
+        low_octave = math.ceil(-notes[0] / 12)
+        high_octave = math.floor((127-notes[-1]) / 12)
+        candidates = [[note + 12*octave for note in notes] for octave in range(low_octave, high_octave+1)]
+        candidates = [chord for chord in candidates if len(set(chord)) == len(chord)]
         reference = sorted(previous or notes)
-        return min(candidates, key=lambda chord: (
-            max(0, register[0]-chord[0], chord[-1]-register[1]) if register else 0,
+        lo, hi = register if register is not None else (0, 127)
+        lo, hi = max(0, min(127, lo)), max(0, min(127, hi))
+        def score(chord):
+            return (
+            max(0, lo-chord[0], chord[-1]-hi),
+            sum(max(0, lo-note, note-hi) for note in chord),
             sum(abs(note-reference[min(i, len(reference)-1)]) for i, note in enumerate(chord)),
-            sum(abs(a-b) for a,b in zip(chord, notes))))
+            sum(abs((b-a)-(d-c)) for a,b,c,d in zip(chord, chord[1:], notes, notes[1:])), tuple(chord))
+        fitting = [chord for chord in candidates if lo <= chord[0] and chord[-1] <= hi]
+        if fitting: return min(fitting, key=score)
+        lower, upper = max(0, math.floor(lo)-24), min(127, math.ceil(hi)+24)
+        options = [[n for n in range(lower, upper+1) if n % 12 == note % 12] for note in notes]
+        for chord in product(*options):
+            if all(a < b for a,b in zip(chord, chord[1:])):
+                candidates.append(list(chord))
+        return min(candidates, key=score)
 
     def resolve_pitch(self, voice: str, target: float) -> float:
         """Resolve one note of a voice.

@@ -11,10 +11,22 @@ from typing import Any, Optional
 
 import mido
 
-from auricle_catalogs import PERCUSSIVE_TYPES, _clamp, _as_float
-from auricle_model import Block, midi_note_for
+from auricle_catalogs import _clamp, _as_float
+from auricle_model import Block, midi_note_for, relation_endpoint_id
 from auricle_drum import timing_offset
 from coordinated_kit import STEP_BEATS, voice_role
+from musical_clock import MusicalGrid
+from musical_events import MusicalEvent
+from transport_queue import TransportCommandQueue
+from midi_expression import MidiExpressionRuntime, entity_expression_config, normalize_midi_sync
+
+def get_midi_input_names():
+    """Return available MIDI inputs without crashing when the backend is absent."""
+    try:
+        return list(mido.get_input_names()), None
+    except Exception as exc:
+        return [], str(exc)
+
 
 def get_midi_output_names():
     """Return available MIDI outputs without crashing when the backend is absent."""
@@ -24,9 +36,15 @@ def get_midi_output_names():
         return [], str(exc)
 
 def _transport_locked(method):
+    """Serialize transport commands without taking the GUI/model lock.
+
+    The transport worker must never hold the lock used by Qt callbacks and
+    widget refreshes.  GUI code may call transport commands while holding its
+    own lock; the worker therefore uses this independent lock domain only.
+    """
     @functools.wraps(method)
     def wrapped(self, *args, **kwargs):
-        with self._state_lock:
+        with self._transport_lock:
             return method(self, *args, **kwargs)
     return wrapped
 
@@ -41,6 +59,8 @@ class Transport:
     def __init__(self, app: Any):
         self.app = app
         self.running = False
+        self.playback_mode = "blocks"
+        self.composition_position = 0.0
         self.outputs: dict[str, Any] = {}
         self.active_notes: list[tuple[float, Any, int, int, int]] = []
         self.next_due: dict[int, float] = {}
@@ -53,16 +73,83 @@ class Transport:
         self._master_due = 0.0
         self._master_step = 0
         self._ports_refreshing = False
+        # Independent lock domains:
+        # - _state_lock / _gui_lock: legacy GUI-local lock retained for panels
+        #   not yet migrated to enqueue_gui_command(). It does NOT protect data
+        #   from the transport worker and must not be treated as a shared-model
+        #   synchronization primitive.
+        # - _transport_lock: serializes scheduler state, MIDI ports, model
+        #   command application and transport commands. Qt painting uses it
+        #   only non-blockingly; model edits go through gui_command_queue.
         self._state_lock = threading.RLock()
+        self._gui_lock = self._state_lock
+        self._transport_lock = threading.RLock()
         self._motif_schedule = {}
         self._kit_schedule = {}
         self._drum_mod_slots = {}
         self.drum_output_history = {}
+        self._composition_section_key = None
+        self._composition_context = None
+        self.expression_runtime = MidiExpressionRuntime()
+        self._expression_routes = {}
+        self._expression_owner_state = {}
+        self._pitch_bend_ranges = {}
+        self._clock_next_due = None
+        self._clock_interval = None
+        self._clock_active_ports = {}
+        self._ordered_tick_signature = None
+        self._ordered_tick_cache = ()
+        # GUI edits are staged here and applied by the transport thread at a
+        # tick boundary. This prevents concurrent mutation of model/engine
+        # objects while a generator or Relations pass is reading them.
+        self.gui_command_queue = TransportCommandQueue()
+        self.gui_command_errors = 0
+
+    def enqueue_gui_command(self, callback, *, key=None, notification=None, label="GUI edit"):
+        """Submit a model edit for serialized application on the transport thread.
+
+        Keyed commands coalesce rapid control changes; unkeyed commands retain
+        FIFO order. The caller must keep callbacks free of Qt widget access.
+        """
+        return self.gui_command_queue.push(
+            callback, key=key, notification=notification, label=label
+        )
+
+    def _drain_gui_commands(self, *, notify=True):
+        """Apply the pending GUI transaction batch on the transport thread."""
+        for command in self.gui_command_queue.pop_all():
+            try:
+                command["callback"]()
+            except Exception as exc:
+                self.gui_command_errors += 1
+                self._log_error(f"GUI command: {command.get('label', 'edit')}", exc)
+                continue
+            notification = command.get("notification")
+            signal = getattr(self.app, "_transport_command_applied_signal", None)
+            if notify and notification is not None and signal is not None:
+                try:
+                    signal.emit(notification)
+                except Exception:
+                    pass
+
+    @_transport_locked
+    def flush_gui_commands(self, *, notify=True):
+        """Synchronously apply queued edits before save/project replacement."""
+        self._drain_gui_commands(notify=notify)
 
     def _advance_musical_clock(self, now):
         engine = self.app.engine
         delta = engine.clock.advance(now, self.app.project.tempo)
-        engine.performance.tick(self.running, beat_delta=delta, now=now)
+        runtime = engine.composition_runtime
+        if runtime.finished(engine.clock.position_beats):
+            end = runtime.total_beats()
+            delta = max(0., delta - max(0., engine.clock.position_beats - end))
+            engine.clock.position_beats = end
+        if self.playback_mode == "composition":
+            engine.section_performance.advance(engine.clock.position_beats, now=now)
+            engine.section_automation.advance(engine.clock.position_beats)
+        else:
+            engine.performance.tick(self.running, beat_delta=delta, now=now)
         engine.update_harmonic_context()
 
     @_transport_locked
@@ -80,11 +167,16 @@ class Transport:
                 for owner, due in schedule.items():
                     schedule[owner] = now + (due - now) * ratio
             self._master_due = now + (self._master_due - now) * ratio
+            # Re-anchor the 24-PPQN clock to the new tempo immediately; without
+            # this, the first pulse after a tempo edit can use the old interval.
+            sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+            self._clock_next_due = (now + 60.0 / max(1.0, float(self.app.project.tempo)) / 24.0
+                                    if sync["clock_out"] else None)
 
     @property
     def seq_interval(self) -> float:
         """Duration of one SEQ step (a 16th note) at the *current* tempo."""
-        return 60.0 / max(1, int(self.app.project.tempo)) / 4.0
+        return self.app.engine.clock.seconds_for_beats(0.25, self.app.project.tempo)
 
     def _playable_blocks(self):
         """Flatten Drum Machine voices into independent transport owners."""
@@ -113,10 +205,16 @@ class Transport:
                 return
             available = set(ports)
             wanted = {self._resolved_port_name(b) for b in self._playable_blocks() if self._resolved_port_name(b)}
+            sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+            if (sync["clock_out"] or sync["transport_messages"]) and sync["clock_port"] != "*":
+                wanted.add(sync["clock_port"])
             for name in list(self.outputs):
                 if name not in wanted or name not in available:
                     port = self.outputs.pop(name)
+                    self._reset_expression_port(port)
                     self._release_port_notes(port)
+                    for route in [route for route in self._pitch_bend_ranges if route[0] == id(port)]:
+                        self._pitch_bend_ranges.pop(route, None)
                     try:
                         port.close()
                     except Exception:
@@ -134,6 +232,8 @@ class Transport:
 
     @_transport_locked
     def close_ports(self):
+        self._stop_midi_clock()
+        self._reset_expression()
         for port in list(self.outputs.values()):
             self._release_port_notes(port)
             try:
@@ -141,59 +241,171 @@ class Transport:
             except Exception:
                 pass
         self.outputs.clear()
+        self._pitch_bend_ranges.clear()
 
     @_transport_locked
-    def start(self):
+    def start(self, position_beats=None, *, mode="blocks"):
+        self._drain_gui_commands()
+        """Start one scheduler in an explicit Blocks/Composition/Perform mode.
+
+        The header always requests Blocks, so saved form/phrase settings cannot
+        silently take over an initial sound check. Mode switches release notes
+        and rebuild source material under the new effective controls.
+        """
+        if mode not in ("blocks", "composition", "perform"):
+            raise ValueError(f"Unknown playback mode: {mode}")
         if self.running:
-            return
+            if self.playback_mode == mode:
+                if position_beats is not None:
+                    self.seek(position_beats)
+                return
+            self.stop()
+        self.playback_mode = mode
+        self.app.engine.section_automation.reset()
+        self.app.engine.composition_runtime.playback_active = mode == "composition"
+        position = self._seek_position(0. if position_beats is None else position_beats)
+        if mode == "composition":
+            self.composition_position = position
         self.refresh_ports()
         self.app.engine.reset_live()
         self.app.engine.harmonic_runtime.reset()
         self.app.engine.dialogue_runtime.reset()
         self.app.engine.motif_development.reset_playback()
-        self.app.engine.clock.position_beats = 0.0
+        self.app.engine.clock.position_beats = position
+        self.app.engine.section_performance.reset(clear_layers=False)
+        if mode == "composition":
+            self.app.engine.section_performance.advance(position, force=True)
+            self.app.engine.section_automation.advance(position, force=True, regenerate=False)
         self.app.engine.generate()
         now = time.monotonic()
         self.app.engine.clock.start(now, self.app.project.tempo)
+        self.app.engine.clock.seek(position, now)
         self.app.engine.performance._last_time = now
-        if self.app.engine.director.phrase.running:
-            self.app.engine.director.phrase.stage_index = -1
+        self._prime_schedules(now, position)
+        self.running = True
+        self._start_midi_clock(position, now)
+        self.app.set_message(f"PLAY · {mode.upper()}")
+
+    @staticmethod
+    def _seek_position(position):
+        try:
+            position = float(position)
+        except (ValueError, TypeError, OverflowError):
+            position = 0.
+        return max(0., position) if math.isfinite(position) else 0.
+
+    def _prime_schedules(self, now, position):
+        """Re-anchor every scheduler to one musical position, without catch-up."""
+        engine = self.app.engine
         self._motif_schedule.clear()
         self._kit_schedule.clear()
         self._drum_mod_slots.clear()
         self.drum_output_history.clear()
+        for owner in self._playable_blocks():
+            owner._parameter_feedback_event = None
+        self._composition_section_key = None
+        self._composition_context = None
+        self.expression_runtime.reset()
+        self._expression_routes.clear()
+        self._expression_owner_state.clear()
         self.next_due.clear(); self.grid_due.clear(); self.step_count.clear(); self.seq_index.clear()
         self.next_live = {b.id: now for b in self._playable_blocks() if b.mode == "LIVE"}
-        self._master_due = now
-        self._master_step = 0
+        master_grid = MusicalGrid(0.25)
+        self._master_step = max(0, master_grid.slot_at(position, "ceil"))
+        self._master_due = now + engine.clock.seconds_for_beats(master_grid.beat_at(self._master_step) - position)
         for block in self._playable_blocks():
             if self.app.engine.coordinated_drum(block) is not None:
+                slot = max(0, MusicalGrid(STEP_BEATS).slot_at(position, "ceil"))
                 self._kit_schedule[block.id] = {
-                    "slot": 0, "due": self._motif_due_beat(block, 0, STEP_BEATS), "mode": None,
+                    "slot": slot, "due": self._motif_due_beat(block, slot, STEP_BEATS), "mode": None,
                 }
             motif = self.app.engine.active_motif(block)
-            if motif is not None:
-                step = self.app.engine.motif_step_beats(block, motif)
+            if motif is not None or block.algorithm == "Euclidean":
+                step = self.app.engine.sequence_step_beats(block, live=block.mode == "LIVE")
+                slot = max(0, MusicalGrid(step).slot_at(position, "ceil"))
                 # The worker's first tick arrives after PLAY, not at exactly
                 # beat zero. Preserve the opening slot instead of treating
                 # every starting block as a late joiner.
                 self._motif_schedule[block.id] = {
-                    "key": (motif.id, step), "slot": 0,
-                    "due": self._motif_due_beat(block, 0, step), "mode": None,
+                    "key": (motif.id if motif is not None else "euclidean", step), "slot": slot,
+                    "due": self._motif_due_beat(block, slot, step), "mode": None,
                 }
             if block.mode == "SEQ":
-                self._anchor_block(block, now)
-        self.running = True
-        self.app.set_message("PLAY")
+                step_beats = engine.sequence_step_beats(block)
+                slot = max(0, MusicalGrid(step_beats).slot_at(position, "ceil"))
+                interval = self._block_seq_interval(block)
+                offset = _clamp(_as_float(block.parameters.get("timing_offset", 0.), 0.), -.5, .5)
+                grid_beat = MusicalGrid(step_beats).beat_at(slot)
+                grid = now + engine.clock.seconds_for_beats(grid_beat - position, self.app.project.tempo) + offset * interval
+                self.grid_due[block.id] = grid
+                self.step_count[block.id] = self.seq_index[block.id] = slot
+                self.next_due[block.id] = self._swung_time(block, grid, slot, interval)
+                material = block.outputs.get("rhythm", ())
+                if material:
+                    engine.source_positions[block.id] = slot % len(material)
 
     @_transport_locked
-    def stop(self):
+    def seek(self, position_beats):
+        self._drain_gui_commands()
+        """Move stopped or playing transport; preserve Perform gestures.
+
+        SEQ/Kit/motif positions follow the destination grid. Free LIVE restarts
+        its generator state there, without simulating every skipped event.
+        """
+        position = self._seek_position(position_beats)
+        engine = self.app.engine
+        self._reset_expression()
+        self.all_notes_off()
+        engine.section_automation.reset()
+        engine.reset_live(reset_performance=False)
+        engine.harmonic_runtime.reset()
+        engine.dialogue_runtime.reset()
+        engine.motif_development.reset_playback()
+        engine.clock.position_beats = position
+        if self.running and self.playback_mode == "composition":
+            engine.section_performance.advance(position, force=True)
+            engine.section_automation.advance(position, force=True, regenerate=False)
+        engine.generate()
         now = time.monotonic()
-        if self.running:
+        engine.clock.seek(position, now)
+        engine.performance._last_time = now
+        engine.update_harmonic_context(position)
+        self._prime_schedules(now, position)
+        self._sync_composition_section(position)
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        if not self.running and (sync["clock_out"] or sync["transport_messages"]):
+            self.refresh_ports()
+        self._seek_midi_clock(position, now, running=self.running)
+        self.app.set_message(f"SEEK · beat {position:g}")
+        return position
+
+    @_transport_locked
+    def stop(self, *, advance=True):
+        # Do not drain here: stop() can also be called from inside tick() when
+        # Composition ends. The next idle scheduler tick drains pending edits.
+        now = time.monotonic()
+        if self.running and advance:
             self._advance_musical_clock(now)
-        self.app.engine.clock.stop(now)
+        if advance:
+            self.app.engine.clock.stop(now)
+        else:
+            self.app.engine.clock.running = False
+            self.app.engine.clock.seek(self.app.engine.clock.position_beats, now)
+        was_performing = bool(self.app.engine.performance.active
+                              or self.app.engine.performance.active_phrase_releases
+                              or self.app.engine.director.phrase.running)
+        if self.playback_mode == "composition":
+            self.composition_position = self.app.engine.clock.position_beats
+        self._stop_midi_clock()
+        self._reset_expression()
         self.running = False
         self.all_notes_off()
+        self.app.engine.performance.reset()
+        self.app.engine.section_performance.reset(clear_layers=False)
+        was_performing = self.app.engine.section_automation.reset() or was_performing
+        self.app.engine.composition_runtime.playback_active = None
+        if was_performing:
+            self.app.engine.generate()
         self.next_due.clear()
         self.next_live.clear()
         self.seq_index.clear()
@@ -202,6 +414,8 @@ class Transport:
         self._motif_schedule.clear()
         self._kit_schedule.clear()
         self._drum_mod_slots.clear()
+        self._composition_section_key = None
+        self._composition_context = None
         self.app.set_message("STOP")
 
     @_transport_locked
@@ -229,7 +443,8 @@ class Transport:
 
         self.active_notes = remaining
         released_keys = set()
-        for _due, port, note, channel, _owner_id in removed:
+        for _due, port, note, channel, owner_id in removed:
+            self.expression_runtime.note_released(owner_id, note)
             key = (id(port), note, channel)
             if key in released_keys:
                 continue
@@ -281,17 +496,18 @@ class Transport:
 
     def _block_seq_interval(self, block: Block) -> float:
         """Return this block's STRUCTURE/TIMING rate-adjusted SEQ interval."""
-        if self.app.engine.coordinated_drum(block) is not None:
-            return STEP_BEATS * 60.0 / max(1, self.app.project.tempo)
-        step = self.app.engine.motif_step_beats(block)
-        if step is not None:
-            return step * 60.0 / max(1, self.app.project.tempo)
-        rate = _clamp(float(block.parameters.get("timing_rate", 1.0)), 0.25, 4.0)
-        return self.seq_interval / rate
+        return self.app.engine.clock.seconds_for_beats(
+            self.app.engine.sequence_step_beats(block), self.app.project.tempo
+        )
 
     def _note_duration(self, block: Block, interval: float, event: dict[str, float]) -> float:
         # Gate is a musical duration multiplier, not a scheduler tick.
         # 0.05 = very short staccato, 1.0 = full interval, >1 = legato/overlap.
+        duration_beats = event.get("duration_beats")
+        if duration_beats is not None:
+            return max(0.025, self.app.engine.clock.seconds_for_beats(
+                max(0.0, float(duration_beats)), self.app.project.tempo
+            ))
         gate = float(event.get("duration", block.parameters.get("gate", 0.78)))
         return max(0.025, interval * _clamp(gate, 0.05, 1.5))
 
@@ -346,15 +562,72 @@ class Transport:
             note_event["pitch"] = float(pitch)
             self._send_note(block, note_event, port, interval)
 
-    def _dispatch_event(self, block, event, port, interval):
+    def _observe_parameter_event(self, block, before, after, beat):
+        """Bounded, non-persistent feedback for the event actually dispatched."""
+        engine = self.app.engine
+        context_at = getattr(engine.composition_runtime, "context_at", None)
+        context = context_at(beat) if context_at is not None else None
+        index = 0 if block.mode == "LIVE" else int(getattr(engine, "source_positions", {}).get(block.id, 0))
+        pitch = getattr(block, "outputs", {}).get("pitch", ())
+        block._parameter_feedback_event = {
+            "beat": float(beat),
+            "section": (context["section_id"], context["cycle"]) if context is not None else None,
+            "input": {key: float(before.get(key, default)) for key, default in
+                      (("velocity", .8), ("duration", 1.), ("pitch", 0.))},
+            "output": None if after is None else {key: float(after.get(key, default)) for key, default in
+                      (("velocity", .8), ("duration", 1.), ("pitch", 0.))},
+            "reference_pitch": float(pitch[index % len(pitch)]) if pitch else float(before.get("pitch", 0.)),
+        }
+
+    def _dispatch_event(self, block, event, port, interval, beat=None):
         """One accepted-event path for SEQ, LIVE, motifs and Drum Voices."""
         engine = self.app.engine
         parent = engine.drum_parent_for(block)
         if block.muted or (parent is not None and parent.muted):
             return None
-        event = engine.dialogue_event(block, event)
+        beat = engine.clock.position_beats if beat is None else float(beat)
+        before = dict(event)
+        event = engine.drum_bus_event(block, event)
+        if event is None:
+            self._observe_parameter_event(block, before, None, beat)
+            return None
+        event = dict(event)
+        event_class, importance = engine.event_class_info(
+            block, beat, event.get("_composition_slot"), event
+        )
+        event.setdefault("event_class", event_class)
+        event.setdefault("importance", importance)
+        # Evaluate section gates before Dialogue can capture this event, then
+        # apply the remaining section transforms after Dialogue's pitch shaping.
+        if (engine.composition_runtime.enabled()
+                and not engine.composition_event_allowed(block, beat, event.get("_composition_slot"), event)):
+            self._observe_parameter_event(block, before, None, beat)
+            return None
+        event = engine.place_register_event(block, event, beat)
+        if event is not None and "pitch" in event:
+            # Register placement belongs to Center feedback. A later Dialogue
+            # pitch delta must not make the manual Transpose needle mirror it.
+            before["pitch"] = event["pitch"]
+        event = engine.dialogue_event(block, event, beat)
+        event = engine.apply_composition_event(block, event, beat, gate_checked=True)
+        self._observe_parameter_event(block, before, event, beat)
         if event is None:
             return None
+        if float(event.get("velocity", .8)) <= 0 or float(event.get("duration", 1)) <= 0:
+            return None
+        if event is None:
+            return None
+        interval_beats = self.app.engine.clock.beats_for_seconds(interval, self.app.project.tempo)
+        event = MusicalEvent.from_mapping(
+            event,
+            beat=beat,
+            interval_beats=interval_beats,
+            source_id=block.id,
+            role=block.block_type,
+            channel=getattr(block, "midi_channel", None),
+            port=self._resolved_port_name(block),
+            recompute_duration=True,
+        ).to_mapping()
         try:
             self.app.record_generated_event(block, event)
         except Exception:
@@ -408,10 +681,17 @@ class Transport:
             port = reopened
 
         duration = self._note_duration(block, interval, event)
+        runtime = getattr(self.app.engine, "composition_runtime", None)
+        if runtime is not None and runtime.enabled() and runtime.ending() == "stop":
+            remaining = max(0., runtime.total_beats() - self.app.engine.clock.position_beats)
+            duration = min(duration, self.app.engine.clock.seconds_for_beats(
+                remaining, self.app.project.tempo))
         if "harmony_remaining_beats" in event:
-            duration = min(duration, max(.005, float(event["harmony_remaining_beats"]) * 60.0 / max(1, self.app.project.tempo)))
+            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
+                float(event["harmony_remaining_beats"]), self.app.project.tempo)))
         if "dialogue_remaining_beats" in event:
-            duration = min(duration, max(.005, float(event["dialogue_remaining_beats"]) * 60.0 / max(1, self.app.project.tempo)))
+            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
+                float(event["dialogue_remaining_beats"]), self.app.project.tempo)))
         self.active_notes.append((time.monotonic() + duration, port, note, channel, block.id))
 
     def _release_due(self, now: float):
@@ -470,9 +750,8 @@ class Transport:
         humanize jitters this step only (it never feeds back into the grid)."""
         swing = _clamp(_as_float(block.parameters.get("timing_swing", 0.0), 0.0), 0.0, 0.5)
         humanize = _clamp(_as_float(block.parameters.get("timing_humanize", 0.0), 0.0), 0.0, 0.25)
-        if block.mode == "LIVE" and self.app.engine.coordinated_drum(block) is not None:
-            swing = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_swing", swing), swing), 0.0, .5)
-            humanize = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_humanize", humanize), humanize), 0.0, .25)
+        swing = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_swing", swing), swing), 0.0, .5)
+        humanize = _clamp(_as_float(self.app.engine._live_parameter(block, "timing_humanize", humanize), humanize), 0.0, .25)
         jitter = self.app.engine._rng_for(block).uniform(-humanize, humanize) if humanize else 0.0
         drum = self.app.engine.drum_parent_for(block)
         if drum is not None:
@@ -510,65 +789,68 @@ class Transport:
         self.next_due[block.id] = self._swung_time(block, grid, step, interval)
 
     def _ordered_tick_blocks(self):
-        """Return blocks in a dependency-safe order for one transport tick.
-
-        LIVE relations are evaluated while their destination event is built.
-        A destination therefore must run after any LIVE source it reads;
-        otherwise a project-list reorder changes the audible result.  SEQ
-        blocks are processed first because their current grid position is also
-        a source for LIVE destinations.  Cycles remain deterministic by
-        keeping the original project order at the cycle boundary.
-        """
+        """Schedule relation sources before destinations; cache until topology changes."""
+        engine = self.app.engine
         blocks = list(self._playable_blocks())
-        seq = [block for block in blocks if block.mode == "SEQ"]
-        live = [block for block in blocks if block.mode == "LIVE"]
-        by_id = {block.id: block for block in live}
-        live_ids = set(by_id)
-        dependencies = {block.id: [] for block in live}
+        routes = engine.relation_runtime.routes()
+        # Modes and selected built-in sources affect scheduling order. Numeric
+        # stream values and ordinary performance parameters do not.
+        block_signature = tuple(
+            (int(block.id), id(block), str(block.mode), str(block.block_type).upper(),
+             int(engine.drum_parent_for(block).id) if engine.drum_parent_for(block) is not None else None,
+             block.parameters.get("relation_drum_source"), block.parameters.get("relation_chord_source"))
+            for block in blocks
+        )
+        route_signature = tuple(
+            (int(getattr(route, "id", 0)), relation_endpoint_id(route, "source"),
+             relation_endpoint_id(route, "destination"), int(getattr(route, "delay", 0)))
+            for route in routes
+        )
+        signature = (block_signature, route_signature)
+        if signature == self._ordered_tick_signature and self._ordered_tick_signature is not None:
+            return list(self._ordered_tick_cache)
 
-        for destination in live:
-            candidates = []
-            built_in = self.app.engine.role_relation_source(destination)
+        by_id = {block.id: block for block in blocks}
+        dependencies = {block.id: set() for block in blocks}
+
+        def source_owners(source):
+            voices = getattr(source, "drum_voices", None)
+            return [voice.id for voice in voices] if voices else [source.id]
+
+        for destination in blocks:
+            parent = engine.drum_parent_for(destination)
+            targets = {destination.id} | ({parent.id} if parent is not None else set())
+            built_in = engine.role_relation_source(destination)
             if built_in is not None:
-                if str(built_in.block_type).upper() == "DRUM" and getattr(built_in, "drum_voices", None):
-                    candidates.extend(voice.id for voice in built_in.drum_voices if voice.mode == "LIVE")
-                elif built_in.mode == "LIVE":
-                    candidates.append(built_in.id)
-            for relation in self.app.project.relations:
-                if not getattr(relation, "enabled", True) or relation.algorithm == 'Dialogue' or relation.destination_block != destination.id:
+                dependencies[destination.id].update(source_owners(built_in))
+            for route in routes:
+                if relation_endpoint_id(route, "destination") not in targets or int(getattr(route, "delay", 0)) > 0:
                     continue
-                source_parent = next((item for item in self.app.project.blocks
-                                      if item.id == relation.source_block), None)
-                if source_parent is not None and str(source_parent.block_type).upper() == "DRUM" and getattr(source_parent, "drum_voices", None):
-                    candidates.extend(voice.id for voice in source_parent.drum_voices if voice.mode == "LIVE")
-                else:
-                    source = by_id.get(relation.source_block)
-                    if source is not None:
-                        candidates.append(source.id)
-            dependencies[destination.id] = list(dict.fromkeys(candidates))
+                source_id = relation_endpoint_id(route, "source")
+                if source_id in by_id:
+                    dependencies[destination.id].add(source_id)
+                    continue
+                source = engine.find_block(route.source_block)
+                if source is not None:
+                    dependencies[destination.id].update(source_owners(source))
 
-        ordered = []
-        visiting = set()
-        visited = set()
-
-        def visit(block_id):
-            if block_id in visited:
+        ordered, visiting, visited = [], set(), set()
+        def visit(bid):
+            if bid in visited or bid in visiting:
                 return
-            if block_id in visiting:
-                # A relation cycle is diagnosed elsewhere. Do not recurse
-                # forever; the first project-order node remains the anchor.
-                return
-            visiting.add(block_id)
-            for source_id in dependencies.get(block_id, []):
-                if source_id in live_ids:
-                    visit(source_id)
-            visiting.remove(block_id)
-            visited.add(block_id)
-            ordered.append(by_id[block_id])
+            visiting.add(bid)
+            for source in sorted(dependencies[bid]):
+                if source in by_id:
+                    visit(source)
+            visiting.remove(bid)
+            visited.add(bid)
+            ordered.append(by_id[bid])
 
-        for block in live:
+        for block in sorted(blocks, key=lambda item: (item.mode != "SEQ", item.id)):
             visit(block.id)
-        return seq + ordered
+        self._ordered_tick_signature = signature
+        self._ordered_tick_cache = tuple(ordered)
+        return list(ordered)
 
     def _seq_event(self, block: Block, now: float, port: Any, absolute_slot=None):
         # Mute is an output gate. Keep the sequencer clock advancing, but
@@ -576,6 +858,19 @@ class Transport:
         # This protects both the transport loop and tests/tools that invoke
         # the event generator directly.
         engine = self.app.engine
+        engine.relation_runtime.advance_parent(block)
+        step_beats = engine.sequence_step_beats(block)
+        event_slot = (int(absolute_slot) if absolute_slot is not None else
+                      int(self.step_count.get(block.id, self.seq_index.get(block.id, 0))))
+        event_grid = MusicalGrid(step_beats)
+        event_beat = event_grid.beat_at(event_slot)
+        # A cached SEQ loop belongs to a particular musical-time window.
+        # Rebuild it once on entering the next cycle while Director is active;
+        # otherwise LIVE advances its decisions but SEQ repeats window zero.
+        if engine.director.phrase.running and block.outputs.get("rhythm"):
+            origin = engine.sequence_origin(block, len(block.outputs["rhythm"]), event_beat)
+            if engine._seq_director_origins.get(block.id) != origin:
+                engine.regenerate(block, motif_beat=event_beat)
         rhythm = block.outputs.get("rhythm", [])
         if not rhythm:
             return
@@ -596,23 +891,30 @@ class Transport:
         event = None
         slot = self.step_count.get(block.id, i) if absolute_slot is None else absolute_slot
         if rhythm[i] > 0 and engine.pattern_step_allowed(block, slot):
-            probability = engine.event_probability(block)
-            if probability >= 1.0 or engine._rng_for(block).random() <= probability:
-                pitch = block.outputs.get("pitch", [])
-                velocity = block.outputs.get("velocity", [])
-                duration = block.outputs.get("duration", [])
-                root_pitch = pitch[i] if i < len(pitch) else 0.0
-                event = {
-                    "pitch": root_pitch,
-                    "velocity": velocity[i] if i < len(velocity) else 0.8,
-                }
-                if block.block_type in ("CHORD", "PAD"):
-                    event["pitches"] = engine._chord_pitches(block, root_pitch)
-                # Processes may shape the duration stream; honour it in SEQ too.
-                if i < len(duration) and duration[i] > 0:
-                    event["duration"] = duration[i]
-                event = engine.harmonize_event(block, event)
-                event = self._dispatch_event(block, event, port, self._block_seq_interval(block))
+            if engine.event_gate_allowed(block, event_beat, slot=slot):
+                event_beat = event_grid.beat_at(event_slot)
+                kit_plan = engine.kit_plan(block, event_beat)
+                composition_slot = int((kit_plan.start_slot if kit_plan is not None else 0) + i)
+                event_class, importance = engine.event_class_info(block, event_beat, slot)
+                musical_event = MusicalEvent.from_outputs(
+                    block.outputs, i,
+                    beat=event_beat,
+                    interval_beats=step_beats,
+                    source_id=block.id,
+                    role=block.block_type,
+                    channel=getattr(block, "midi_channel", None),
+                    port=self._resolved_port_name(block),
+                    composition_slot=composition_slot,
+                    event_class=event_class,
+                    importance=importance,
+                )
+                if musical_event is not None:
+                    event = musical_event.to_mapping()
+                    root_pitch = event["pitch"]
+                    if block.block_type in ("CHORD", "PAD"):
+                        event["pitches"] = engine._chord_pitches(block, root_pitch)
+                    event = engine.harmonize_event(block, event, event_beat)
+                    event = self._dispatch_event(block, event, port, self._block_seq_interval(block), event_beat)
         engine.collect_parameter_modulations(block, i)
         return event
 
@@ -626,25 +928,27 @@ class Transport:
 
     def _motif_due_beat(self, block, slot, step):
         offset = _clamp(_as_float(block.parameters.get("timing_offset", 0.0), 0.0), -.5, .5)
-        return self._swung_time(block, slot * step, slot, step) + offset * step
+        beat = MusicalGrid(step).beat_at(slot)
+        return self._swung_time(block, beat, slot, step) + offset * step
 
     def _tick_kit_voice(self, block, now, port):
         """One shared sixteenth grid, including rests and mode changes."""
         engine = self.app.engine
         beat = engine.clock.position_beats
         schedule = self._kit_schedule.get(block.id)
+        grid = MusicalGrid(STEP_BEATS)
         if schedule is None:
-            slot = max(0, int(math.ceil(beat / STEP_BEATS - 1e-8)))
+            slot = max(0, grid.slot_at(beat, "ceil"))
             schedule = {"slot": slot, "due": self._motif_due_beat(block, slot, STEP_BEATS), "mode": None}
             self._kit_schedule[block.id] = schedule
         slot = schedule["slot"]
-        if beat >= (slot + 1) * STEP_BEATS - 1e-8:
-            slot = max(slot, int(math.floor(beat / STEP_BEATS + 1e-8)))
+        if beat >= grid.beat_at(slot + 1) - 1e-8:
+            slot = max(slot, grid.slot_at(beat, "floor"))
             schedule["slot"] = slot
             schedule["due"] = self._motif_due_beat(block, slot, STEP_BEATS)
         if beat + 1e-8 < schedule["due"]:
             return
-        scheduled_beat = slot * STEP_BEATS
+        scheduled_beat = grid.beat_at(slot)
         plan = engine.kit_plan(block, scheduled_beat)
         variant = engine.motif_variant(block, scheduled_beat)
         token = variant.token if variant is not None else None
@@ -660,76 +964,434 @@ class Transport:
         else:
             accepted_event = None
             event = engine.live_event(block, beat=scheduled_beat)
-            if event is not None:
-                probability = engine.event_probability(block)
-                if probability >= 1.0 or engine._rng_for(block).random() <= probability:
-                    accepted_event = self._dispatch_event(block, event, port, self._block_seq_interval(block))
+            if event is not None and engine.event_gate_allowed(block, scheduled_beat, slot=slot, event=event):
+                accepted_event = self._dispatch_event(block, event, port, self._block_seq_interval(block), scheduled_beat)
         self._observe_kit_output(block, slot, accepted_event)
         parent = engine.drum_parent_for(block)
         engine._aggregate_drum_outputs(parent)
         engine.apply_relations()
 
     def _tick_motif(self, block, motif, now, port):
-        """Schedule SEQ/LIVE motif slots on the same absolute beat clock.
+        """Schedule motifs and Euclidean slots on the absolute beat clock.
 
         Rests and muted events consume slots too. Late ticks skip old slots
         instead of playing a burst, and parameter regeneration owns no phase.
         """
         engine = self.app.engine
         beat = engine.clock.position_beats
-        step = engine.motif_step_beats(block, motif)
-        key = (motif.id, step)
+        step = engine.sequence_step_beats(block, live=block.mode == "LIVE")
+        key = (motif.id if motif is not None else "euclidean", step)
         schedule = self._motif_schedule.get(block.id)
+        grid = MusicalGrid(step)
         if schedule is None or schedule["key"] != key:
-            slot = max(0, int(math.ceil(beat / step - 1e-8)))
+            slot = max(0, grid.slot_at(beat, "ceil"))
             schedule = {"key": key, "slot": slot, "due": self._motif_due_beat(block, slot, step), "mode": None}
             self._motif_schedule[block.id] = schedule
         slot = schedule["slot"]
-        if beat >= (slot + 1) * step - 1e-8:
-            slot = max(slot, int(math.floor(beat / step + 1e-8)))
+        if beat >= grid.beat_at(slot + 1) - 1e-8:
+            slot = max(slot, grid.slot_at(beat, "floor"))
             schedule["slot"] = slot
             schedule["due"] = self._motif_due_beat(block, slot, step)
         if beat + 1e-8 < schedule["due"]:
             return
         # Resolve at the scheduled slot, including early humanized onsets.
         # SEQ must rebuild on a new variant just as LIVE reads the new material.
-        variant = engine.motif_variant(block, beat=slot * step)
+        scheduled_beat = grid.beat_at(slot)
+        variant = engine.motif_variant(block, beat=scheduled_beat) if motif is not None else None
+        token = variant.token if variant is not None else None
         if block.mode == "SEQ" and (schedule["mode"] != "SEQ" or
                 engine._seq_motifs.get(block.id) is not motif or
-                engine._seq_motif_tokens.get(block.id) != variant.token):
-            engine.regenerate(block, motif_beat=slot * step)
+                engine._seq_motif_tokens.get(block.id) != token):
+            engine.regenerate(block, motif_beat=scheduled_beat)
         schedule["mode"] = block.mode
         schedule["slot"] = slot + 1
         schedule["due"] = self._motif_due_beat(block, slot + 1, step)
-        interval = step * 60.0 / max(1, self.app.project.tempo)
+        interval = engine.clock.seconds_for_beats(step, self.app.project.tempo)
         if block.mode == "SEQ":
-            self.seq_index[block.id] = slot % motif.steps
-            self._seq_event(block, now, port)
+            self.seq_index[block.id] = slot % (motif.steps if motif is not None else max(1, int(self.app.project.length)))
+            self._seq_event(block, now, port, absolute_slot=slot)
         else:
-            event = engine.live_event(block, beat=slot * step)
-            if event is not None:
-                probability = engine.event_probability(block)
-                if probability >= 1.0 or engine._rng_for(block).random() <= probability:
-                    self._dispatch_event(block, event, port, interval)
+            event = engine.live_event(block, beat=scheduled_beat)
+            if event is not None and engine.event_gate_allowed(block, scheduled_beat, slot=slot, event=event):
+                self._dispatch_event(block, event, port, interval, scheduled_beat)
         parent = engine.drum_parent_for(block)
         if parent is not None:
             engine._aggregate_drum_outputs(parent)
             engine.apply_relations()
 
+    def _clock_port_items(self):
+        """Return unique physical ports selected for global MIDI Clock."""
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        if sync["clock_port"] == "*":
+            items = list(self.outputs.items())
+        else:
+            port = self.outputs.get(sync["clock_port"])
+            items = [(sync["clock_port"], port)] if port is not None else []
+        unique = {}
+        for name, port in items:
+            if port is not None:
+                unique.setdefault(id(port), (name, port))
+        return list(unique.values())
+
+    def _send_clock_message(self, port_name, port, message, block=None):
+        try:
+            port.send(message)
+            self._monitor(block, port_name, message)
+            return True
+        except Exception as exc:
+            self._log_error(f"MIDI sync {message.type} port={port_name}", exc)
+            return False
+
+    def _send_song_position(self, position, ports=None):
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        if not sync["song_position_pointer"]:
+            return
+        midi_position = int(max(0, min(16383, round(float(position) * 4.0))))
+        for name, port in (ports if ports is not None else self._clock_port_items()):
+            self._send_clock_message(name, port, mido.Message("songpos", pos=midi_position))
+
+    def _start_midi_clock(self, position, now=None):
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        ports = self._clock_port_items()
+        self._clock_active_ports = {id(port): (name, port) for name, port in ports}
+        now = time.monotonic() if now is None else float(now)
+        if sync["transport_messages"]:
+            if float(position) > 1e-9:
+                self._send_song_position(position, ports)
+                message = mido.Message("continue")
+            else:
+                message = mido.Message("start")
+            for name, port in ports:
+                self._send_clock_message(name, port, message)
+        elif (sync["clock_out"] or sync["transport_messages"]) and sync["song_position_pointer"] and float(position) > 1e-9:
+            self._send_song_position(position, ports)
+        if sync["clock_out"]:
+            self._clock_interval = 60.0 / max(1.0, float(self.app.project.tempo)) / 24.0
+            self._clock_next_due = now + self._clock_interval
+        else:
+            self._clock_next_due = None
+            self._clock_interval = None
+
+    def _stop_midi_clock(self):
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        if sync["transport_messages"]:
+            for name, port in list(self._clock_active_ports.values()):
+                self._send_clock_message(name, port, mido.Message("stop"))
+        self._clock_next_due = None
+        self._clock_interval = None
+        self._clock_active_ports.clear()
+
+    def _seek_midi_clock(self, position, now=None, *, running=False):
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        ports = self._clock_port_items()
+        if (sync["clock_out"] or sync["transport_messages"]) and sync["song_position_pointer"]:
+            self._send_song_position(position, ports)
+        if running and sync["transport_messages"]:
+            for name, port in ports:
+                self._send_clock_message(name, port, mido.Message("continue"))
+        if running and sync["clock_out"]:
+            now = time.monotonic() if now is None else float(now)
+            self._clock_interval = 60.0 / max(1.0, float(self.app.project.tempo)) / 24.0
+            self._clock_next_due = now + self._clock_interval
+        elif not running:
+            self._clock_next_due = None
+            self._clock_interval = None
+
+    def _tick_midi_clock(self, now):
+        sync = normalize_midi_sync(getattr(self.app.project, "midi_sync", {}))
+        if not self.running or not sync["clock_out"]:
+            return
+        ports = self._clock_port_items()
+        if not ports:
+            return
+        interval = 60.0 / max(1.0, float(self.app.project.tempo)) / 24.0
+        if self._clock_next_due is None or self._clock_interval is None:
+            self._clock_interval = interval
+            self._clock_next_due = float(now) + interval
+            return
+        if abs(interval - self._clock_interval) > 1e-9:
+            # Re-anchor the next pulse immediately when project BPM changes;
+            # do not let one pulse retain the old tempo interval.
+            self._clock_interval = interval
+            self._clock_next_due = float(now) + interval
+            return
+        if now + 1e-6 < self._clock_next_due:
+            return
+        message = mido.Message("clock")
+        for name, port in ports:
+            self._send_clock_message(name, port, message)
+        lateness = max(0.0, float(now) - self._clock_next_due)
+        # Do not burst stale clocks after a scheduler stall. Resume on the next
+        # pulse interval; slaves remain locked without receiving a clock burst.
+        self._clock_next_due = (float(now) + interval if lateness > interval * 0.75
+                                else self._clock_next_due + interval)
+
+    def set_midi_sync_config(self, config):
+        """Apply global MIDI sync settings safely while stopped or playing."""
+        with self._transport_lock:
+            was_running = bool(self.running)
+            position = float(self.app.engine.clock.position_beats)
+            if was_running:
+                self._stop_midi_clock()
+            self.app.project.midi_sync = normalize_midi_sync(config)
+            self.refresh_ports()
+            if was_running:
+                self._start_midi_clock(position)
+
+    def _expression_config(self, block, context):
+        parent = self.app.engine.drum_parent_for(block)
+        section = context.get("section") if context is not None else None
+        return entity_expression_config(block, parent=parent, section=section)
+
+    def _send_expression_command(self, block, port_name, port, command):
+        channel = self._midi_channel(block)
+        kind = command.get("type")
+        if kind == "control_change":
+            message = mido.Message("control_change", channel=channel,
+                                   control=int(command["control"]), value=int(command["value"]))
+        elif kind == "pitchwheel":
+            semitones = int(command.get("range_semitones", 2))
+            route = (id(port), channel)
+            if self._pitch_bend_ranges.get(route) != semitones:
+                # RPN 0,0 sets Pitch Bend Sensitivity on the receiving channel.
+                for control, value in ((101, 0), (100, 0), (6, semitones), (38, 0), (101, 127), (100, 127)):
+                    rpn = mido.Message("control_change", channel=channel, control=control, value=value)
+                    if not self._send_clock_message(port_name, port, rpn, block=block):
+                        return
+                self._pitch_bend_ranges[route] = semitones
+            message = mido.Message("pitchwheel", channel=channel,
+                                   pitch=int(max(-8192, min(8191, command["pitch"]))))
+        elif kind == "aftertouch":
+            message = mido.Message("aftertouch", channel=channel,
+                                   value=int(max(0, min(127, command["value"]))))
+        elif kind == "polytouch":
+            message = mido.Message("polytouch", channel=channel,
+                                   note=int(max(0, min(127, command["note"]))),
+                                   value=int(max(0, min(127, command["value"]))))
+        else:
+            return
+        if self._send_clock_message(port_name, port, message, block=block):
+            route = (id(port), channel)
+            state = self._expression_routes.setdefault(route, {"port": port, "name": port_name, "types": set()})
+            state["types"].add(kind)
+
+    @staticmethod
+    def _expression_types(config):
+        types = set()
+        controllers = {}
+        for lane in config.get("cc_lanes", ()):
+            if lane.get("enabled"):
+                controllers[int(lane.get("controller", 0))] = int(lane.get("min", 0))
+        if controllers:
+            types.add("control_change")
+        if config.get("pitch_bend", {}).get("enabled"):
+            types.add("pitchwheel")
+        pressure = config.get("aftertouch", {})
+        if pressure.get("enabled"):
+            types.add("polytouch" if pressure.get("mode") == "polyphonic" else "aftertouch")
+        return types, controllers
+
+    def _release_expression_types(self, owner_id, previous, removed_types, removed_controllers=()):
+        route = previous["route"]
+        others = [item for bid, item in self._expression_owner_state.items()
+                  if bid != int(owner_id) and item["route"] == route]
+        still_types = set().union(*(item["types"] for item in others)) if others else set()
+        port, name, channel = previous["port"], previous["name"], previous["channel"]
+        state = self._expression_routes.get(route)
+        still_controllers = set().union(*(set(item.get("controllers", {})) for item in others)) if others else set()
+        for controller in set(removed_controllers):
+            if controller not in still_controllers:
+                reset_value = int(previous.get("controllers", {}).get(controller, 0))
+                self._send_clock_message(name, port, mido.Message("control_change", channel=channel,
+                                                                   control=int(controller), value=max(0, min(127, reset_value))))
+        for kind in set(removed_types):
+            if kind in still_types:
+                continue
+            if kind == "pitchwheel":
+                self._send_clock_message(name, port, mido.Message("pitchwheel", channel=channel, pitch=0))
+            elif kind == "aftertouch":
+                self._send_clock_message(name, port, mido.Message("aftertouch", channel=channel, value=0))
+            elif kind == "polytouch":
+                notes = sorted({note for _due, active_port, note, active_channel, owner in self.active_notes
+                                if active_port is port and active_channel == channel and owner == int(owner_id)})
+                for note in notes:
+                    self._send_clock_message(name, port, mido.Message("polytouch", channel=channel, note=note, value=0))
+            if state is not None:
+                state["types"].discard(kind)
+        remaining_types = set(previous["types"]) - set(removed_types)
+        if remaining_types:
+            previous["types"] = remaining_types
+            self._expression_owner_state[int(owner_id)] = previous
+        else:
+            self._expression_owner_state.pop(int(owner_id), None)
+        if state is not None and not state["types"]:
+            self._expression_routes.pop(route, None)
+
+    def _release_expression_owner(self, owner_id):
+        previous = self._expression_owner_state.get(int(owner_id))
+        if previous:
+            self._release_expression_types(owner_id, previous, set(previous["types"]),
+                                           set(previous.get("controllers", {})))
+
+    def _tick_midi_expression(self, now):
+        engine = self.app.engine
+        beat = float(engine.clock.position_beats)
+        runtime = engine.composition_runtime
+        context = runtime.context_at(beat)
+        section = context.get("section") if context is not None else None
+        playable_blocks = list(self._playable_blocks())
+        seen_owners = set()
+        active_notes_by_owner = {}
+        for _due, active_port, note, _channel, owner in self.active_notes:
+            active_notes_by_owner.setdefault((id(active_port), int(owner)), []).append(int(note))
+        for block in playable_blocks:
+            owner_id = int(block.id)
+            seen_owners.add(owner_id)
+            parent = engine.drum_parent_for(block)
+            section_block_settings = section.get("blocks", {}).get(str(owner_id), {}) if section is not None else {}
+            if (block.muted or (parent is not None and parent.muted)
+                    or (section is not None and not bool(section_block_settings.get("enabled", True)))):
+                self._release_expression_owner(owner_id)
+                continue
+            port_name = self._resolved_port_name(block)
+            port = self.outputs.get(port_name) if port_name else None
+            if port is None:
+                self._release_expression_owner(owner_id)
+                continue
+            config = self._expression_config(block, context)
+            types, controllers = self._expression_types(config)
+            if not types:
+                self._release_expression_owner(owner_id)
+                continue
+            channel = self._midi_channel(block)
+            route = (id(port), channel)
+            previous = self._expression_owner_state.get(owner_id)
+            if previous is not None:
+                route_changed = previous["route"] != route
+                removed_types = (set(previous["types"]) if route_changed
+                                 else set(previous["types"]) - set(types))
+                removed_controllers = (set(previous.get("controllers", {})) if route_changed
+                                       else set(previous.get("controllers", {})) - set(controllers))
+                if removed_types or removed_controllers:
+                    self._release_expression_types(owner_id, previous, removed_types, removed_controllers)
+            self._expression_owner_state[owner_id] = {
+                "route": route, "port": port, "name": port_name,
+                "channel": channel, "types": set(types), "controllers": dict(controllers),
+            }
+            active_notes = active_notes_by_owner.get((id(port), owner_id), ())
+            commands = self.expression_runtime.sample(owner_id, config, beat, context, active_notes, normalized=True)
+            for command in commands:
+                try:
+                    self._send_expression_command(block, port_name, port, command)
+                except Exception as exc:
+                    self._log_error(f"MIDI expression block={block.id} {command.get('type')}", exc)
+        # Removed blocks/voices can leave a non-neutral wheel or pressure value.
+        for owner_id in list(self._expression_owner_state):
+            if owner_id not in seen_owners:
+                self._release_expression_owner(owner_id)
+
+    def _reset_expression_port(self, port):
+        """Neutralise expression on a port before its native handle is closed."""
+        active = list(self.active_notes)
+        for route, state in list(self._expression_routes.items()):
+            if state.get("port") is not port:
+                continue
+            channel = route[1]
+            name = state.get("name", "")
+            kinds = state.get("types", set())
+            if "pitchwheel" in kinds:
+                self._send_clock_message(name, port, mido.Message("pitchwheel", channel=channel, pitch=0))
+            if "aftertouch" in kinds:
+                self._send_clock_message(name, port, mido.Message("aftertouch", channel=channel, value=0))
+            if "polytouch" in kinds:
+                notes = sorted({note for _due, active_port, note, active_channel, _owner in active
+                                if active_port is port and active_channel == channel})
+                for note in notes:
+                    self._send_clock_message(name, port, mido.Message("polytouch", channel=channel, note=note, value=0))
+            controllers = {}
+            for owner_id, owner_state in self._expression_owner_state.items():
+                if owner_state.get("route") == route:
+                    controllers.update(owner_state.get("controllers", {}))
+            for controller, reset_value in sorted(controllers.items()):
+                self._send_clock_message(name, port, mido.Message("control_change", channel=channel,
+                                                                   control=int(controller), value=int(reset_value)))
+            self._expression_routes.pop(route, None)
+            for owner_id, owner_state in list(self._expression_owner_state.items()):
+                if owner_state.get("route") == route:
+                    self._expression_owner_state.pop(owner_id, None)
+        self.expression_runtime.reset()
+
+    def _reset_expression(self):
+        """Return channel pressure and pitch wheels to neutral on STOP."""
+        active = list(self.active_notes)
+        for (_port_id, channel), state in list(self._expression_routes.items()):
+            port = state.get("port")
+            name = state.get("name", "")
+            kinds = state.get("types", set())
+            if port is None:
+                continue
+            if "pitchwheel" in kinds:
+                self._send_clock_message(name, port, mido.Message("pitchwheel", channel=channel, pitch=0))
+            if "aftertouch" in kinds:
+                self._send_clock_message(name, port, mido.Message("aftertouch", channel=channel, value=0))
+            if "polytouch" in kinds:
+                notes = sorted({note for _due, active_port, note, active_channel, _owner in active
+                                if active_port is port and active_channel == channel})
+                for note in notes:
+                    self._send_clock_message(name, port, mido.Message("polytouch", channel=channel, note=note, value=0))
+        self._expression_routes.clear()
+        self._expression_owner_state.clear()
+        self.expression_runtime.reset()
+
+    def _sync_composition_section(self, beat):
+        """Release sustained notes when a block becomes inactive in a new section."""
+        runtime = getattr(self.app.engine, "composition_runtime", None)
+        context = runtime.context_at(beat) if runtime is not None else None
+        key = (context["cycle"], context["section_id"]) if context is not None else None
+        if key == self._composition_section_key:
+            return
+        previous = self._composition_context
+        if context is not None:
+            for block in self._playable_blocks():
+                was_enabled = True
+                if previous is not None:
+                    was_enabled = runtime.block_settings(previous["section"], block.id)["enabled"]
+                now_enabled = runtime.block_settings(context["section"], block.id)["enabled"]
+                if was_enabled and not now_enabled:
+                    self._release_block_notes(block.id)
+        self._composition_section_key = key
+        self._composition_context = context
+
     @_transport_locked
     def tick(self):
+        self._drain_gui_commands()
         if not self.running:
             return
         now = time.monotonic()
         engine = self.app.engine
         self._advance_musical_clock(now)
+        self._tick_midi_clock(now)
+        if engine.composition_runtime.finished(engine.clock.position_beats):
+            self.stop(advance=False)
+            self.app.set_message("COMPOSITION · finished")
+            return
+        self._sync_composition_section(engine.clock.position_beats)
+        # Send continuous controller and pitch-bend values before Note On at
+        # this scheduler instant. Polyphonic Aftertouch is deferred until the
+        # end of the tick, when newly-started notes are present in active_notes.
+        self._tick_midi_expression(now)
+        engine.relation_runtime.begin_tick()
         # Apply only values queued during previous ticks. Any modulation
         # generated below is therefore guaranteed at least one tick late.
         engine.apply_pending_parameter_modulations()
         self._release_due(now)
         interval = self.seq_interval
-        self._master_step = int(math.floor(engine.clock.position_beats * 4 + 1e-8)) + 1
-        self._master_due = now + engine.clock.seconds_for_beats(self._master_step / 4 - engine.clock.position_beats)
+        master_grid = MusicalGrid(0.25)
+        self._master_step = master_grid.slot_at(engine.clock.position_beats, "floor") + 1
+        self._master_due = now + engine.clock.seconds_for_beats(
+            master_grid.beat_at(self._master_step) - engine.clock.position_beats,
+            self.app.project.tempo,
+        )
 
         # Process each block independently. A single bad block/port must not
         # terminate the entire musical engine.
@@ -757,7 +1419,7 @@ class Transport:
                     else:
                         self.next_live[block.id] = now
                 motif = engine.active_motif(block)
-                if motif is not None:
+                if motif is not None or block.algorithm == "Euclidean":
                     self.grid_due.pop(block.id, None)
                     self._tick_motif(block, motif, now, port)
                     continue
@@ -772,7 +1434,7 @@ class Transport:
                         self._anchor_block(block, now)  # new or returning block joins the grid
                     due = self.next_due.get(block.id, now)
                     if now >= due:
-                        self._seq_event(block, now, port)
+                        self._seq_event(block, now, port, absolute_slot=self.step_count.get(block.id, 0))
                         parent = engine.drum_parent_for(block)
                         if parent is not None:
                             engine._aggregate_drum_outputs(parent)
@@ -788,18 +1450,23 @@ class Transport:
                     if now >= due:
                         event = engine.live_event(block)
                         if event is not None:
-                            probability = engine.event_probability(block)
-                            accepted = probability >= 1.0 or engine._rng_for(block).random() <= probability
+                            accepted = engine.event_gate_allowed(
+                                block, engine.clock.position_beats,
+                                slot=engine.source_positions.get(block.id), event=event,
+                            )
                             live_interval = float(event.get("interval", 0.25))
                             if accepted:
-                                self._dispatch_event(block, event, port, live_interval)
+                                self._dispatch_event(block, event, port, live_interval, engine.clock.position_beats)
                         else:
                             live_interval = engine._live_interval(block, engine._rng_for(block))
                         parent = engine.drum_parent_for(block)
                         if parent is not None:
                             engine._aggregate_drum_outputs(parent)
                             engine.apply_relations()
-                        self.next_live[block.id] = now + max(0.01, live_interval)
+                        # Normal worker lateness must not accumulate as tempo
+                        # drift. After a real stall, resume without a burst.
+                        next_due = due + max(0.01, live_interval)
+                        self.next_live[block.id] = next_due if next_due > now else now + max(0.01, live_interval)
             except Exception as exc:
                 # Disable only this block for the current step; keep other
                 # generators alive and make the actual failure inspectable.
@@ -825,3 +1492,5 @@ class Transport:
                 engine.collect_parameter_modulations(drum, engine.source_positions.get(drum.id, slot))
             except Exception as exc:
                 self._log_error(f"transport kit modulation={drum.id}", exc)
+        engine.relation_runtime.end_tick()
+        self._tick_midi_expression(now)

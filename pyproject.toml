@@ -26,20 +26,24 @@ packages = ["auricle_assets"]
 py-modules = [
     "auricle_core", "auricle_catalogs", "auricle_model", "auricle_engine",
     "auricle_drum", "auricle_relations", "auricle_persistence", "auricle_transport",
-    "auricle_gui", "auricle_resources", "coordinated_kit", "drum_editing",
-    "generators", "harmonic_plan", "harmonic_plan_ui", "help_content",
-    "instrument_dialogue", "instrument_dialogue_ui", "motif_development",
-    "motif_engine", "music_director", "musical_clock", "parameter_influence",
-    "parameter_influence_ui", "pattern_chance", "performance_presets",
-    "project_history", "project_history_ui", "relation_context", "transport_queue",
-    "transport_worker", "ui_themes", "version", "voice_leading",
+    "auricle_gui", "auricle_resources", "coordinated_kit", "drum_editing", "drum_rhythm", "drum_rhythm_ui",
+    "generators", "experimental_generators", "harmonic_plan", "harmonic_plan_ui", "help_content", "help_catalog", "help_tooltips",
+    "instrument_dialogue", "instrument_dialogue_ui", "motif_development", "motif_transformations",
+    "motif_engine", "mutators", "music_director", "musical_clock", "musical_events", "parameter_influence",
+    "parameter_influence_ui", "parameter_sources", "parameter_sources_ui", "pattern_chance", "performance_presets",
+    "project_history", "project_history_ui", "relation_context", "relation_runtime", "rhythm_intelligence", "transport_queue",
+    "transport_worker", "transport_icons", "ui_themes", "ui_profile_runtime", "version", "voice_leading",
+    "composition_performance", "composition_performance_ui",
+    "composition_planner", "composition_planner_ui", "composition_automation", "composition_curve_ui", "section_automation", "section_automation_ui",
+    "midi_expression", "midi_expression_ui", "midi_learn", "midi_learn_ui", "midi_input_reader", "midi_input_diagnostics",
+    "ui_metrics", "ui_icons", "ui_layout",
 ]
 
 [tool.setuptools.package-dir]
 auricle_assets = "assets"
 
 [tool.setuptools.package-data]
-auricle_assets = ["*.png", "*.ico", "*.icns"]
+auricle_assets = ["*.png", "*.svg", "*.ico", "*.icns"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

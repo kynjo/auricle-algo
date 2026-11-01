@@ -41,3 +41,45 @@ class TransportEventQueue:
     def __len__(self):
         with self._lock:
             return len(self._heap)
+
+
+class TransportCommandQueue:
+    """Thread-safe queue for model edits submitted by the Qt GUI.
+
+    Commands are drained only by the transport thread at a tick boundary.
+    Optional keys coalesce high-rate controls (knob/slider drags) while
+    preserving the original queue position of the first edit.
+    """
+    def __init__(self):
+        from collections import deque
+        self._items = deque()
+        self._by_key = {}
+        self._lock = threading.Lock()
+
+    def push(self, callback, *, key=None, notification=None, label="GUI edit"):
+        if not callable(callback):
+            raise TypeError("transport command must be callable")
+        with self._lock:
+            if key is not None and key in self._by_key:
+                item = self._by_key[key]
+                item["callback"] = callback
+                item["notification"] = notification
+                item["label"] = str(label)
+                return False
+            item = {"key": key, "callback": callback,
+                    "notification": notification, "label": str(label)}
+            self._items.append(item)
+            if key is not None:
+                self._by_key[key] = item
+            return True
+
+    def pop_all(self):
+        with self._lock:
+            items = list(self._items)
+            self._items.clear()
+            self._by_key.clear()
+        return items
+
+    def __len__(self):
+        with self._lock:
+            return len(self._items)

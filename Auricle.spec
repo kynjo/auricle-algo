@@ -6,11 +6,13 @@ import sys
 
 ROOT = Path(SPECPATH).resolve()
 VERSION = runpy.run_path(str(ROOT / "version.py"))["PACKAGE_VERSION"]
+artwork = runpy.run_path(str(ROOT / "packaging" / "render_icons.py"))["prepare_icons"](
+    ROOT / "assets" / "auricle_logo.svg", ROOT / "assets")
 icon = None
 if sys.platform == "win32":
-    icon = str(ROOT / "assets" / "auricle.ico")
+    icon = str(artwork["ico"])
 elif sys.platform == "darwin":
-    icon = str(ROOT / "assets" / "auricle.icns")
+    icon = str(artwork["icns"])
 
 a = Analysis(
     [str(ROOT / "auricle_gui.py")],
@@ -21,9 +23,10 @@ a = Analysis(
         (str(ROOT / "examples"), "examples"),
         (str(ROOT / "docs"), "docs"),
         (str(ROOT / "README.md"), "."),
-        (str(ROOT / "RELEASE_NOTES.md"), "."),
+        (str(ROOT / "CHANGELOG.md"), "."),
     ],
-    hiddenimports=["mido.backends.rtmidi", "rtmidi"],
+    hiddenimports=["mido.backends.rtmidi", "rtmidi", "composition_planner", "composition_planner_ui",
+                   "composition_performance", "composition_performance_ui"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

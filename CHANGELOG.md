@@ -1,3 +1,175 @@
+# Auricle v2.0 — consolidated changelog
+
+## v2.0 · 2026-10-30 · Lightweight UI and callback lifetime
+
+- UI-профиль algo_conf теперь применяется к сохранённым целям по их путям,
+  без непрерывного отражения всего дерева Qt и массового создания borrowed
+  QLayoutItem. Обычные Style/Font/Show события не запускают повторный обход.
+- Runtime вынесен в `ui_profile_runtime.py`. Сохранены пользовательские значения
+  профиля. Штатный запуск использует безопасный runtime и после экспорта старой
+  версией algo_conf. Смена темы применяет профиль один раз и сохраняет splitter.
+- Один UI heartbeat обновляет видимую вкладку; остановленный интерфейс опрашивается
+  реже. Обновление пропускается, если MIDI-поток занят, вместо ожидания блокировки.
+  Captions источников влияния зарегистрированы через weak references.
+- Закреплённый Drum Kit сохраняется при выборе voice. Неизменённые карточки
+  Perform/Composition переиспользуются; одинаковое выделение не меняет QSS повторно.
+- Отложенные callbacks привязаны к QObject-контексту и отменяются с владельцем;
+  удалённый piano roll не используется. Runtime снимает наблюдение при удалении окна.
+- Планировщик объединяет только устаревшие polling ticks; остальные callbacks
+  сохраняются. Это предотвращает длинные серии захватов общей блокировки после
+  задержки. Убраны лишние вычисления ролей и копирование неизменяемых чисел
+  при сборке Drum/Relations; группы графа без влияния не обходятся по всем шагам.
+- Добавлены поведенческие проверки стоимости обновлений, удаления окна и
+  планировщика; обновлены устаревшие source-assertions на QObject-контекст timers.
+  Версия остаётся v2.0. Подробности: `docs/UI_PERFORMANCE_FIX_RU.md`.
+
+## v2.0 · 2026-10-29 · Musical Drum Kit
+
+- Добавлен Rhythm map: четыре авторских согласованных drum-рисунка с
+  интерполяцией Map X/Y. Карта работает на всех размерах Kit в SEQ и LIVE,
+  сохраняет роли, Half-time, опорные удары и разделение open/closed hat.
+- Density в Rhythm map сначала убирает украшения, затем опорные удары;
+  ноль остаётся полным выключением звука. Старый Role grid сохраняет прежнюю логику.
+- Добавлены Motifs, Development и Return: ограниченный автомат Theme /
+  Variation / Answer / Fill / Return с воспроизводимым развитием и перемоткой.
+  Composition учитывает конец текущей секции для каденции; основной Play
+  сохраняет независимое прослушивание Blocks.
+- Добавлены редактируемые прямо в Drum Voice links: Support, Answer,
+  Fill gaps, AND, XOR и Copy, сила, задержка, включение и удаление каждой связи.
+  Источники и назначения отмечены цветами voices. Все связи читают один снимок
+  плана, поэтому циклы не зависят от порядка обхода. Опоры и владение hat/fill
+  остаются защищены.
+- Кнопка Musical kit включает все три направления для существующего Drum;
+  новые Drum-блоки получают этот режим сразу. MIDI-настройки и генераторы voices
+  сохраняются. Новые непрерывные параметры доступны обычным маршрутам модуляции.
+- Сохранена пользовательская раскладка algo_conf; исправлен обнаруженный сбой
+  обхода объектов Qt при применении встроенного UI-профиля.
+- Добавлены руководство `docs/DRUM_MUSICAL_RU.md`, демонстрационный проект и
+  поведенческие, MIDI и Qt-проверки. Версия приложения остаётся v2.0.
+
+## v2.0 · 2026-10-28 · Composition + Perform
+
+- Вместо отдельных Perform и Composition — одна вкладка COMPOSITION.
+- Цветные секции с настраиваемым цветом, пропорциональной полосой формы и timeline.
+- Фраза, Amount, Targets и длительность/Fit сохраняются отдельно в каждой секции.
+- Компактные карточки инструментов: Technique, Amount, Shape, Fit, Active, Gate,
+  Density, Velocity, Register Center; графики 140×100 px с указателем проигрывания.
+- Явная техника заменяет наследуемую, None отключает только технику. Targets
+  ограничивает также музыкальное влияние Director, включая Drum Voices по родителю.
+- Переходы, перемотка, цикл и Hold last корректно входят в нужную стадию фразы;
+  нейтральные секции снимают временные слои и обновляют SEQ. Конечные значения
+  удерживаемого приёма не вызывают постоянную регенерацию.
+- Основной Play остаётся прослушиванием Blocks. Ручные средства исполнения
+  доступны через Manual performance audition. Director и Harmonic Plan свёрнуты внизу.
+- Новый пример `examples/unified_composition_demo.json`, актуальный скриншот,
+  руководство `docs/UNIFIED_COMPOSITION_RU.md`. Версия остаётся v2.0.
+
+
+## 2026-10-28 — Separate Blocks, Composition and Perform playback
+
+- Make header Play a plain Blocks audition: bypass the saved Composition plan, section macros/expression and form endings; reset stale Perform phrases, techniques and release layers. Keep the saved Enable composition flag intact.
+- Give Composition Play its own checked state and Stop scope. Switch playback modes through one MIDI scheduler, releasing old notes and regenerating under the new controls. Header Stop / Space remain global stop controls.
+- Preserve a separate Composition cursor while auditioning Blocks. Form timeline edits during Blocks prepare a future start without seeking or cutting the sound check. Show an explicit BYPASS state and suppress ineffective Composition parameter feedback.
+- Start Perform only from explicit phrase/technique controls, initialize the transport before arming the gesture, and stop phrase state with the transport. Restore saved card choices without silently restarting techniques on UI rebuild.
+- Preserve playback mode, the Composition gate and form cursor through parameter/structural Undo/Redo; clear the old cursor when loading another project.
+- Add captured-MIDI and native Qt regressions for mode switches, source attribution, note release, cursor isolation and explicit Perform startup. Version remains v2.0.
+
+## 2026-10-27 — Key-safe Register Center automation
+
+- Replace per-section chromatic Transpose with Register Center offset (−24…+24, relative to the block Center). Apply register placement before final scale/harmonic anchoring, while keeping Composition offsets out of source-pattern caches.
+- Change Perform Register Rise/Fall and their phrase stages to relative Center gestures anchored to manual values. Retain the base for the whole gesture, restore it on stop/release, and use Center for Musical Director register motion too.
+- Combine resolved parameter layers, Director motion and section offsets into a bounded effective Center. Preserve pitch classes through octave selection, including narrow registers and MIDI edges; keep complete chord tone sets and fixed Drum Voice notes.
+- Pass the effective Center into Harmonic Plan anchoring and voicing. Use direct octave placement when a whole chord fits, retaining the full voicing resolver for impossible/narrow windows.
+- Move Perform/Composition source dots and live register feedback to ROLE → Center. Exclude register placement from Transpose feedback; retain the separate manual Transpose control and explicit Relations stream feedback.
+- Update the Composition column, parameter reference, Russian instructions and examples. Version remains v2.0.
+
+## 2026-10-27 — Composition transport and form endings
+
+- Add independent Play/Stop controls inside Composition, using the shared transport and the same theme-aware icons as the header. Composition Play enables the plan and starts/restarts from the selected section, form start or timeline cursor.
+- Make the full-form timeline seekable. Drag previews the destination and seeks once on release, snapped to a sixteenth note; card selection remains independent from playback.
+- Re-anchor SEQ, Euclidean, motif and Drum Kit schedules at the destination, release old notes and clear stale live/relationship histories. Preserve active Perform gestures on seek; free LIVE restarts at the destination without simulating skipped events.
+- Replace the Loop checkbox with explicit End choices: Loop form, Stop at end and Hold last section. Save the choice with Undo/Redo support; preserve the prior hold behavior for non-looping projects.
+- Stop at the exact musical form length, including fractional meters and tempo edits. Bound note tails and suppress later events; synchronize the main header and Composition UI after automatic completion.
+- Add an expandable Controlled parameters reference in the tab and update the demo/manual. Version remains v2.0.
+
+## 2026-10-27 — Composition curves and extended expression
+
+- Fix premature MIDI note releases when editing Active in a future/other section or while Composition is disabled. Only a playing, active section may immediately release its notes.
+- Add editable point curves for all four section macros, with Smooth / Linear / Step segments, normalized section time and live playheads. Add, drag and remove points with mouse/keyboard; retain one Undo step per drag.
+- Add Blend in in musical bars, including transitions to Follow Global and the loop seam. The first start uses its own first point; non-looping playback holds the last endpoint. Keep existing projects' unconfigured transitions immediate.
+- Feed automation into real SEQ/LIVE density, dynamics, variation and harmonic tension at event time. Keep source patterns and manual values intact; update source indicators, Global readouts and effective knob feedback from the same curve state.
+- Add a selected-block/Drum Voice Expression strip: Gate, metric Accent, role-bounded Octave spread and Harmony anchoring. Retain drum note assignments and complete chord intervals.
+- Add Perform techniques Dynamic Scatter, Register Bloom, Harmonic Resolve and coordinated Kit Evolution; consume velocity randomness in free LIVE generation and adapt Kit scatter to shared Humanize.
+- Include a curve demo and updated Russian instructions. Version remains v2.0.
+
+## 2026-10-27 — Real-time parameter feedback
+
+- Preserve a hollow green Composition indicator in neutral sections and Follow Global states. Starting playback at the first section no longer looks like Composition has been disabled.
+- Explain the start workflow beside Enable composition: enable once, then use main Play; selecting a section edits it without seeking the transport.
+- Animate bound Inspector/Drum Kit knobs and value readouts from effective Perform layers and output-equivalent Composition/Relations influence. Keep a small outer tick at the manual setting.
+- Show effective section macros in the Global header while retaining their manual project values; restore manual display when Composition is disabled.
+- Refresh on the existing GUI heartbeat without emitting editing signals, regenerating notes, rebuilding the Inspector or creating Undo entries. Suspend display updates on controls being dragged.
+- Keep missing authored expression parameters independent from transient layer values when resolving manual defaults. Version remains v2.0.
+
+## 2026-10-26 — Source-coloured navigation
+
+- Match Perform, Composition and Relations tabs to the violet, green and amber source indicators, with contrasting labels and their own icons in every theme.
+
+## 2026-10-25 — Parameter source indicators
+
+- Add compact eight-pixel colour dots to Inspector parameter captions, pinned Drum Kit controls and the Global macro header, without letters or extra control rows.
+- Use violet for Perform, mint for Composition and amber for Relations; combine sources on one caption and explain them in hover tooltips and accessibility descriptions.
+- Follow real Technique layers and their control policies, Director phrases, harmonic plans, the section at the transport position, stream Relations, built-in role connections, Dialogue and individual Drum Voice endpoints.
+- Distinguish parameter layers from processing applied to output notes. Tooltips do not present stream effects as rewritten generator values; bypassed assigned layers have hollow dots.
+- Refresh attribution on the existing GUI heartbeat with a nonblocking transport lock. Source observation does not regenerate notes, move knobs, rebuild the Inspector, write project data or create Undo entries.
+- Include the new modules in Python packaging. Version remains v2.0.
+
+## 2026-10-25 — Composition Planner UI
+
+- Fix selected-section text contrast in all light and dark themes; draw clear card borders and distinguish editing selection from the active section.
+- Add drag-and-drop section ordering, preserving stable IDs, per-block settings, persistence and Undo/Redo.
+- Replace the progress bar with a full-form timeline: proportional sections, bar ruler, boundaries, transport playhead and loop-relative position.
+- Place Name, Type and Duration captions directly above their fields.
+- Show the total form length in bars, quarter-note beats and time at the current BPM; update it after duration, meter and tempo changes.
+- Keep the timeline and status visible while the editor scrolls in compact windows. Version remains v2.0.
+- Update existing layout/logo test fixtures for the Composition tab order and theme-aware transport icons.
+
+![Auricle v2.0](docs/screenshots/auricle-v2.0.png)
+
+## 2026-10-24 — v2.0
+
+- Promote the current project to the v2.0 release line: `APP_VERSION = "v2.0"`, Python package version `2.0.0`.
+- Add first-class Relations endpoints for individual Drum Voices. Source and Destination now expose entries such as `KIT / KICK`, with Voice→Voice, Voice→Block and Block→Voice routes in SEQ and LIVE.
+- Extend the relation graph, delay/history handling, cycle diagnostics and transport dependency ordering to include Drum Voice owners while preserving the parent Drum bus.
+- Persist, duplicate, validate and remove Drum Voice routes safely; retain the old block-level relation schema for existing projects.
+- Keep the Relations UI compatible with numeric block IDs while adding colour-coded Drum Voice entries and clear endpoint labels.
+- Add regression coverage for SEQ, LIVE, persistence and ownership validation. Full suite: 1511 tests passed.
+- Remove temporary build/test caches and obsolete patch-release files from the clean distribution archive.
+
+## v2.0 — Composition Planner (in development)
+
+- Add a dedicated COMPOSITION tab with eight editable section types: Intro,
+  Verse, Build, Drop, Break, Bridge, Transition and Outro.
+- Add arbitrary section insertion, duplication, deletion, reordering and per-
+  section bar lengths under a selectable global meter.
+- Add optional section overrides for Energy, Tension, Density and Variation,
+  plus per-block/Drum Voice Active, Density, Velocity, Transpose and Variation.
+- Apply section performance controls at event time in both SEQ and LIVE so a
+  later section can restore source-pattern events instead of losing them in a
+  cached buffer. Keep the global macro baseline when section overrides are off.
+- Persist the arrangement in project JSON and include it in document history;
+  keep Composition disabled by default so existing v2.0 projects retain their
+  previous playback until the user enables the planner.
+
+## Release highlights
+
+- Algorithmic MIDI generation for DRUM, BASS, MELODY, PAD and CHORD blocks.
+- Drum Voices / Kit with shared timing, roles, MIDI note/channel routing and individual sound settings.
+- SEQ/LIVE generation, motifs, Perform techniques, global macros, harmonic plans and Instrument Dialogue.
+- Typed Mutators, Process chains, stable Relations graph, Undo/Redo, MIDI Monitor and project persistence.
+
+## Historical changes
+
 ## v111 — GitHub and build preparation
 
 - Include the complete current asset set in source, wheel and native builds.

@@ -20,7 +20,7 @@ class Process:
 class Mutator:
     name: str
     amount: float = 0.5
-    target: str = "pitch"  # rhythm, pitch, velocity
+    target: str = "pitch"  # rhythm, pitch, velocity, timing (gate multiplier)
 
 
 @dataclass
@@ -45,6 +45,8 @@ class DrumVoice:
     color: str = ""
     muted: bool = False
     is_drum_voice: bool = True
+    # Per-voice MIDI expression lanes (CC, Pitch Bend, Aftertouch).
+    midi_expression: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         # Infer once when a voice is created/loaded; later renaming or MIDI
@@ -91,13 +93,16 @@ class Block:
     # None means a legacy/simple DRUM block that has not been upgraded to the
     # Drum Machine container yet. The GUI and project loader materialize voices.
     drum_voices: Optional[list[DrumVoice]] = None
+    # Per-block MIDI expression lanes (CC, Pitch Bend, Aftertouch).
+    midi_expression: dict[str, Any] = field(default_factory=dict)
 
 def make_default_drum_voices(parent: Block) -> list[DrumVoice]:
     """Create the six editable voices of a new Drum Machine."""
     voices = []
     for index, (name, algorithm, note, parameters) in enumerate(DRUM_VOICE_DEFAULTS, 1):
         # Negative ids cannot collide with ordinary project block ids and are
-        # stable across saves. They are runtime owners, not relation targets.
+        # stable across saves. They identify the voice in relation routes and
+        # transport history while the owning Drum block remains persisted.
         voice_id = -(abs(int(parent.id)) * 100 + index)
         voice_params = {
             "gate": 0.78, "live_gate": 0.65, "fill_density": 1.0,
@@ -155,6 +160,11 @@ class Relation:
     enabled: bool = True
     id: int = 0
     parameters: dict[str, Any] = field(default_factory=dict)
+    # Optional child endpoint for a Drum Machine relation.  The block fields
+    # remain the owning DRUM container so old projects, validation and UI
+    # colour lookup keep working; the voice id selects the concrete stream.
+    source_voice_id: Optional[int] = None
+    destination_voice_id: Optional[int] = None
 
 
 @dataclass
@@ -172,6 +182,34 @@ class Project:
     motifs: dict[str, dict[str, Any]] = field(default_factory=dict)
     phrase_state: dict[str, Any] = field(default_factory=dict)
     harmonic_plan: dict[str, Any] = field(default_factory=dict)
+    parameter_policies: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Optional arrangement form; disabled by default to preserve legacy playback.
+    composition: dict[str, Any] = field(default_factory=dict)
+    # Persistent, per-entity motif variant history.  Kept separate from the
+    # reusable motif library so generated memories do not pollute its picker.
+    # Older projects simply omit this field and load with an empty memory.
+    motif_memory: dict[str, Any] = field(default_factory=dict)
+    # Global MIDI Clock master configuration. Disabled by default for legacy projects.
+    midi_sync: dict[str, Any] = field(default_factory=dict)
+    # Incoming MIDI Learn controller mappings and preferred input port.
+    midi_mappings: list[dict[str, Any]] = field(default_factory=list)
+    midi_input_port: str = ""
+
+
+def relation_endpoint_id(relation: Relation, side: str) -> int:
+    """Return the concrete owner id used by the relation runtime.
+
+    A relation without a voice selector addresses its ordinary block.  A
+    Drum Voice selector addresses the negative, stable child id while keeping
+    ``source_block``/``destination_block`` as the owning Drum container.
+    """
+    voice_id = getattr(relation, f"{side}_voice_id", None)
+    if voice_id is not None:
+        try:
+            return int(voice_id)
+        except (TypeError, ValueError):
+            pass
+    return int(getattr(relation, f"{side}_block"))
 
 
 def block_root(project: Any, block: Block) -> int:
