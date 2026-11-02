@@ -1,4 +1,6 @@
 from pathlib import Path
+from PySide6.QtWidgets import QWidget
+from test_midi_learn_runtime_ui import app, editor
 
 GUI_SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
 
@@ -35,14 +37,15 @@ def test_motion_contains_mutation_and_process_sections():
     assert 'ProcessInlineControls' in motion
 
 
-def test_output_layer_is_removed_and_midi_routing_stays_in_block_header():
+def test_output_layer_is_removed_and_midi_routing_stays_in_block_header(editor):
+    _, win, _ = editor
     source = GUI_SOURCE.read_text(encoding="utf-8")
     header = source[source.index('# BLOCK identity'):source.index('# SOURCE')]
     monitor = source[source.index('# MONITOR / diagnostics'):source.index('    def _remember_group')]
     assert 'make_layer("OUTPUT"' not in source
     assert 'InspectorGroup("OUTPUT PORTS"' not in source
-    assert 'header_label("MIDI Ch")' in header
-    assert 'header_label("Base note")' in header
-    assert 'header_label("MIDI Out")' in header
+    identity = win.inspector_page.findChild(QWidget, "inspectorBlockHeader")
+    names = {w.accessibleName() for w in identity.findChildren(QWidget)}
+    assert {"MIDI Ch", "Base note", "MIDI Out"} <= names
     assert 'MIDI PIANO ROLL' in monitor
     assert 'BlockStatePanel' not in monitor

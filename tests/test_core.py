@@ -77,7 +77,7 @@ def test_live_event_reapplies_relations_to_seq_destination():
     event = e.live_event(source)
     assert event is not None
     assert all(v > 0.0 for v in dest.outputs["rhythm"])
-    assert any(v == 2.0 for v in dest.outputs["rhythm"])
+    assert set(dest.outputs["rhythm"]) == {1.0}  # event masks stay binary
 
 
 def test_reopen_port_releases_old_port_notes(monkeypatch):

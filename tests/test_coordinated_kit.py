@@ -36,7 +36,7 @@ def test_shared_roles_keep_anchors_and_exclude_conflicting_hats(style, anchors, 
     plan = engine.kit_plan(voices[0], 0)
     kick, snare, closed, opened, clap, tom = voices
     assert {i for i in range(16) if plan.at(kick.id, i).force} == anchors
-    assert {i for i in range(16) if plan.at(snare.id, i).force or plan.at(clap.id, i).force} == backbeats
+    assert {i for i in range(16) if plan.at(snare.id, i).anchor or plan.at(clap.id, i).anchor} == backbeats
     for i in range(plan.length):
         assert not (plan.at(closed.id, i).allowed and plan.at(opened.id, i).allowed)
         assert not (plan.at(snare.id, i).force and plan.at(clap.id, i).force)
@@ -139,7 +139,7 @@ def test_voice_density_zero_suppresses_forced_anchors_and_fill(mode):
             assert all(engine.live_event(voice, beat=i * .25) is None for i in range(32))
 
 
-def setup_transport(monkeypatch, project, engine):
+def setup_transport(monkeypatch, project, engine, *, playback_mode="blocks"):
     now, sent, errors = [100.0], [], []
     monkeypatch.setattr("auricle_transport.time.monotonic", lambda: now[0])
     app = SimpleNamespace(project=project, engine=engine, set_message=lambda _: None,
@@ -148,7 +148,7 @@ def setup_transport(monkeypatch, project, engine):
     transport.refresh_ports = lambda: None
     transport._log_error = lambda context, exc: errors.append((context, exc))
     transport.outputs["capture"] = SimpleNamespace(send=lambda msg: sent.append((round(now[0] - 100, 5), msg)))
-    transport.start()
+    transport.start(mode=playback_mode)
     def tick(seconds):
         now[0] = 100 + seconds
         transport.tick()

@@ -33,9 +33,10 @@ def test_non_gm_kit_has_an_audible_foundation_in_every_bar(monkeypatch, mode):
     onsets = {(round(t / .125), message.note) for t, message in sent if message.type == "note_on"}
     for bar in range(4):
         assert {(bar * 16, 0), (bar * 16 + 8, 0)} <= onsets
-        assert {(bar * 16 + 4, 1), (bar * 16 + 12, 1)} <= onsets
+        for step in (4, 12):
+            assert any((bar * 16 + step, note) in onsets for note in (1, 4))
         for step in (0, 2, 4, 6, 8, 10):
-            assert (bar * 16 + step, 2) in onsets
+            assert any((bar * 16 + step, note) in onsets for note in (2, 3))
     assert all(message.channel == 9 for _, message in sent if message.type == "note_on")
 
 

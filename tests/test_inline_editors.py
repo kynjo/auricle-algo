@@ -58,8 +58,8 @@ def test_mutator_add_type_target_and_amount_in_place(editor, role):
     assert len(block.mutators) == 1
     row = win.inspector_page.findChild(gui.MutatorInlineControls)
     assert row.mutator is block.mutators[0]
-    row.kind.setCurrentText("Humanize")
     row.target.setCurrentText("timing")
+    row.kind.setCurrentText("Humanize")
     row.amount.setValue(.81)
     assert (row.mutator.name, row.mutator.target, row.mutator.amount) == ("Humanize", "timing", .81)
     assert win.inspector_page.findChild(gui.MutatorInlineControls) is row
@@ -115,3 +115,43 @@ def test_deleted_and_retyped_default_mutators_stay_that_way_after_loading(editor
     assert load_project(str(path)).blocks[0].mutators == []
 
 
+
+
+def test_mutator_choices_follow_data_types_and_preserve_the_editor(editor):
+    from mutators import mutators_for_target
+    gui, app, win, panel = editor
+    win.selected_block_id = 3
+    win.add_mutator(); drain(app)
+    row = win.inspector_page.findChild(gui.MutatorInlineControls)
+    for target in ("pitch", "rhythm", "velocity", "timing"):
+        row.target.setCurrentText(target)
+        choices = [row.kind.itemText(i) for i in range(row.kind.count())]
+        assert choices == mutators_for_target(target)
+        assert row.mutator.name in choices
+        assert win.inspector_page.findChild(gui.MutatorInlineControls) is row
+    row.target.setCurrentText("pitch")
+    row.kind.setCurrentText("Octave")
+    row.target.setCurrentText("rhythm")
+    assert row.mutator.name == "Rotate" and row.amount.isEnabled()
+
+
+def test_drum_mutator_target_does_not_offer_pitch(editor):
+    gui, app, win, panel = editor
+    win.selected_block_id = 1
+    win.add_mutator(); drain(app)
+    row = win.inspector_page.findChild(gui.MutatorInlineControls)
+    assert [row.target.itemText(i) for i in range(row.target.count())] == ["rhythm", "velocity", "timing"]
+
+
+def test_loaded_incompatible_mutator_is_visible_but_bypassed(editor):
+    from auricle_core import Mutator
+    gui, app, win, panel = editor
+    block = win.project.blocks[2]
+    block.mutators = [Mutator("Octave", 1, "rhythm")]
+    win.selected_block_id = block.id
+    win._refresh_inspector()
+    row = win.inspector_page.findChild(gui.MutatorInlineControls)
+    assert row.kind.currentText() == "Octave" and not row.amount.isEnabled()
+    assert "Bypassed" in row.kind.toolTip()
+    row.kind.setCurrentText("Rotate")
+    assert row.amount.isEnabled() and row.mutator.name == "Rotate"

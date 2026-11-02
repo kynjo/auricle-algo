@@ -1,4 +1,4 @@
-"""Select motifs without disturbing the pinned kit or replacing live widgets."""
+"""Select motifs without disturbing the embedded kit or replacing live widgets."""
 from motif_engine import Motif
 from test_kit_preview_lifecycle import inspector
 
@@ -53,7 +53,7 @@ def test_phrase_auto_updates_without_inspector_rebuild(inspector):
     assert not errors
 
 
-def test_drum_voice_binding_keeps_kit_pinned(inspector):
+def test_drum_voice_binding_keeps_kit_section_stable(inspector):
     from PySide6.QtTest import QTest
     gui, win, drum, melody, errors = prepare(inspector)
     win.selected_block_id, win.selected_drum_voice_id = drum.id, None
@@ -71,4 +71,37 @@ def test_drum_voice_binding_keeps_kit_pinned(inspector):
     assert voice.parameters["motif_id"] == "kick"
     assert "motif_id" not in drum.parameters
     assert "motif_id" not in drum.drum_voices[1].parameters
+    assert not errors
+
+
+def test_drum_kit_and_voice_controls_share_the_inspector_scroll_area(inspector):
+    from PySide6.QtTest import QTest
+
+    gui, win, drum, melody, errors = prepare(inspector)
+    win.selected_block_id, win.selected_drum_voice_id = drum.id, None
+    win._refresh_inspector()
+    QTest.qWait(80)
+
+    page = win.inspector_scroll.widget()
+    panel = win.drum_kit_layout.itemAt(0).widget()
+    assert panel is not None
+    assert win.drum_kit_host.parentWidget() is page
+    assert page.isAncestorOf(panel)
+    assert page.layout().itemAt(0).widget() is win.drum_kit_host
+    assert page.layout().itemAt(1).widget().objectName() == "inspectorContent"
+    assert win.inspector_scroll.verticalScrollBar().maximum() > 0
+
+    # Scrolling to the end moves the kit out of the viewport as well; it is
+    # no longer a fixed panel above the scroll area.
+    bar = win.inspector_scroll.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    QTest.qWait(30)
+    kit_top = win.drum_kit_host.mapTo(win.inspector_scroll.viewport(), gui.QPoint(0, 0)).y()
+    assert kit_top < 0
+
+    voice = drum.drum_voices[0]
+    win._select_drum_voice(voice.id)
+    QTest.qWait(80)
+    assert win.drum_kit_layout.itemAt(0).widget() is panel
+    assert win.drum_kit_host.parentWidget() is win.inspector_scroll.widget()
     assert not errors

@@ -142,7 +142,7 @@ def test_output_view_switches_in_place_and_marks_unknown_vs_rest(inspector):
     panel.view_selector.setCurrentIndex(1)
     lane=panel.plan_lanes[voice.id]
     assert lane.output_values[:3] == [.8, 0, None]
-    assert len(lane.output_values)==14
+    assert len(lane.output_values)==win.project.length
     panel.view_selector.setCurrentIndex(0)
     assert lane.output_values is None and lane.steps[0].anchor
     assert win.drum_kit_layout.itemAt(0).widget() is panel

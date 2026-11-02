@@ -73,3 +73,22 @@ def test_drum_voice_capture_does_not_change_siblings_or_pinned_selection(inspect
     assert "motif_id" not in drum.parameters
     assert "motif_id" not in drum.drum_voices[1].parameters
     assert not errors
+
+
+def test_transform_controls_create_a_non_destructive_library_child(inspector):
+    from PySide6.QtTest import QTest
+    gui, win, drum, melody, errors = prepare(inspector)
+    win._set_motif_binding(melody, "mel")
+    QTest.qWait(80)
+    page = win.inspector_scroll.widget()
+    transform = page.findChild(gui.QComboBox, "motifTransform")
+    transform.setCurrentIndex(transform.findData("retrograde"))
+    page.findChild(gui.QPushButton, "motifTransformApply").click()
+    QTest.qWait(100)
+    child_id = melody.parameters["motif_id"]
+    source = win.engine.director.motifs.motifs["mel"]
+    assert child_id != "mel"
+    assert win.project.motifs[child_id]["parent_id"] == "mel"
+    assert source.notes == [0, 4, 7]
+    assert page is not win.inspector_scroll.widget()
+    assert not errors

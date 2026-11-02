@@ -80,7 +80,7 @@ def test_narrowing_register_repositions_current_chord():
 
 @pytest.mark.parametrize('quality', QUALITIES)
 @pytest.mark.parametrize('inversion,spread,width', [(0, 7, 24), (1, 14, 24), (-1, 36, 6)])
-def test_octave_selection_preserves_voicing_even_when_wider_than_register(quality, inversion, spread, width):
+def test_octave_selection_preserves_voicing_or_folds_an_impossible_spread(quality, inversion, spread, width):
     intervals = list(QUALITIES[quality][1])
     notes = [60+i for i in intervals]
     for _ in range(abs(inversion) % len(notes)):
@@ -90,7 +90,13 @@ def test_octave_selection_preserves_voicing_even_when_wider_than_register(qualit
             notes[i] += 12
     notes.sort()
     bounded = VoiceLeading.resolve_chord(notes, [110, 114, 117, 121], register=(48-width/2, 48+width/2))
-    assert [note-bounded[0] for note in bounded] == [note-notes[0] for note in notes]
+    fits = any(48-width/2 <= notes[0]+12*k and notes[-1]+12*k <= 48+width/2 for k in range(-12,13))
+    if fits:
+        assert [note-bounded[0] for note in bounded] == [note-notes[0] for note in notes]
+    else:
+        assert bounded[-1]-bounded[0] <= notes[-1]-notes[0]
+    assert [note % 12 for note in bounded] == [note % 12 for note in notes]
+    assert len(set(bounded)) == len(notes)
     assert {n % 12 for n in bounded} == set(intervals)
     assert abs((bounded[0]+bounded[-1])/2 - 48) <= 6
 

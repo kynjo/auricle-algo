@@ -104,7 +104,7 @@ def test_phrase_ui_duration_controls_runtime_and_survives_save(monkeypatch, tmp_
     win.performance_timer.stop()
     win.transport_worker.stop()
     # PLAY PHRASE is exercised without opening a physical MIDI device.
-    monkeypatch.setattr(win.transport, "start", lambda: None)
+    monkeypatch.setattr(win.transport, "refresh_ports", lambda: None)
     try:
         panel = win.performance.phrase_panel
         panel.phrase_combo.setCurrentIndex(panel.phrase_combo.findData("climax_release"))

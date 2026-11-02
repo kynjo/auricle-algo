@@ -41,10 +41,22 @@ def test_spec_builds_native_bundle_with_all_artwork(platform, extension, monkeyp
             return SimpleNamespace(pure=[], scripts=[], binaries=[], datas=[])
         return record
     primitives = {name: stage(name) for name in ("Analysis", "PYZ", "EXE", "COLLECT", "BUNDLE")}
+    real_run_path = runpy.run_path
+    def run_path(path, *args, **kwargs):
+        if Path(path).name == 'render_icons.py':
+            def prepare(source, output):
+                assert source == ROOT / 'assets' / 'auricle_logo.svg'
+                assert output == ROOT / 'assets'
+                calls['icons'] = True
+                return {key: output / ('auricle.' + key) for key in ('ico', 'icns')}
+            return {'prepare_icons': prepare}
+        return real_run_path(path, *args, **kwargs)
+    monkeypatch.setattr(runpy, 'run_path', run_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "platform", platform)
     runpy.run_path(str(ROOT / "Auricle.spec"), init_globals={"SPECPATH": str(ROOT), **primitives})
     data = dict(calls["Analysis"][1]["datas"])
+    assert calls['icons']
     assert data[str(ROOT / "assets")] == "assets"
     assert all(Path(path).exists() for path in data)
     icon = calls["EXE"][1]["icon"]
@@ -85,7 +97,7 @@ def test_release_tag_and_github_screenshot_links(tmp_path, monkeypatch):
     script = root / "packaging/release_metadata.py"
     script.write_bytes((ROOT / "packaging/release_metadata.py").read_bytes())
     (root / "version.py").write_bytes((ROOT / "version.py").read_bytes())
-    (root / "RELEASE_NOTES.md").write_bytes((ROOT / "RELEASE_NOTES.md").read_bytes())
+    (root / "CHANGELOG.md").write_bytes((ROOT / "CHANGELOG.md").read_bytes())
     version = runpy.run_path(str(root / "version.py"))["APP_VERSION"]
     env = {**os.environ, "GITHUB_REF_TYPE": "tag", "GITHUB_REF_NAME": "v0",
            "GITHUB_REPOSITORY": "example/auricle", "GITHUB_SHA": "abc123"}
@@ -96,5 +108,5 @@ def test_release_tag_and_github_screenshot_links(tmp_path, monkeypatch):
     good = subprocess.run([sys.executable, str(script)], env=env, capture_output=True, text=True)
     assert good.returncode == 0, good.stderr
     notes = (root / "build/release-notes.md").read_text(encoding="utf-8")
-    assert "https://github.com/example/auricle/blob/abc123/docs/screenshots/auricle-v111.png?raw=true" in notes
+    assert "https://github.com/example/auricle/blob/abc123/docs/screenshots/auricle-v2.0.png?raw=true" in notes
     assert "(README.md)" not in notes

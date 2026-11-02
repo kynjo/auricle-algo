@@ -1,18 +1,21 @@
 from pathlib import Path
+from test_midi_learn_runtime_ui import app, editor
+from ui_metrics import CARD_HEIGHT
 
 GUI_SOURCE = Path(__file__).resolve().parents[1] / "auricle_gui.py"
 
 
-def test_block_card_uses_compact_reference_layout():
-    source = GUI_SOURCE.read_text(encoding="utf-8")
-    theme_source = (GUI_SOURCE.parent / "ui_themes.py").read_text(encoding="utf-8")
-    assert 'self.index_badge = QLabel(str(block.id))' in source
-    assert 'self.type_label = QLabel(f"Type: {block.block_type}")' in source
-    assert 'self.algorithm_label = QLabel(f"Algorithm: {block.algorithm}")' in source
-    assert 'self.midi_label = QLabel(f"MIDI Ch: {int(block.midi_channel)}")' in source
-    assert 'self.menu_button = QPushButton("⋮")' in source
-    assert 'QLabel#blockIndex' in theme_source
-    assert 'QPushButton#cardMenu' in theme_source
+def test_block_card_uses_compact_reference_layout(editor):
+    _, win, _ = editor
+    block = win.project.blocks[0]
+    card = win.block_list.itemWidget(win.block_list.item(0))
+    assert card.index_badge.text() == str(block.id)
+    assert card.type_label.text() == block.block_type
+    assert card.algorithm_label.text() == block.algorithm
+    assert card.midi_label.text() == f"CH {block.midi_channel}"
+    assert not card.type_icon.pixmap().isNull()
+    assert card.menu_button.text() == "⋮"
+    assert card.height() == CARD_HEIGHT
 
 
 def test_mode_switch_is_horizontal():

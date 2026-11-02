@@ -61,6 +61,6 @@ def test_inspector_scroll_restore_retries_after_layout_settles():
     start = source.index("    def _refresh_inspector(self, restore_anchor=None):")
     end = source.index("    def _remember_group", start)
     block = source[start:end]
-    assert "QTimer.singleShot(0, restore_inspector_scroll)" in block
-    assert "QTimer.singleShot(50, restore_inspector_scroll)" in block
+    assert "QTimer.singleShot(0, self, restore_inspector_scroll)" in block
+    assert "QTimer.singleShot(50, self, restore_inspector_scroll)" in block
     assert "ensureWidgetVisible(target" in block

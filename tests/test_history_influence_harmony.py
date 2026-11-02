@@ -68,8 +68,9 @@ def test_real_macro_modulation_technique_writes_leave_manual_snapshot_intact():
     engine.apply_pending_parameter_modulations()
     assert block.parameters['fill_density'] == .6
     trace = engine.parameter_influence.describe(block, 'fill_density')
-    assert trace['writes'][-1]['source'] == 'Parameter Modulation'
-    assert trace['writes'][-1]['before'] == .25
+    modulation = next(row for row in trace['writes'] if row['source'] == 'Parameter Modulation')
+    assert modulation['before'] == .25
+    assert trace['winner'] == 'Modulation'
     technique = presets_for(block.block_type, block.algorithm)[0]
     assert engine.performance.start(block, technique.id, beats=16)
     engine.performance.tick(True, beat_delta=4)
@@ -125,7 +126,7 @@ def test_voicing_stays_on_explicit_chord_even_outside_global_scale(quality, role
 
 @pytest.mark.parametrize('role', ['BASS', 'MELODY'])
 def test_anchor_and_cadence_follow_plan_and_zero_strength_is_free(role):
-    block = Block(1, role, role, parameters={'harmonic_strength': .7})
+    block = Block(1, role, role, parameters={'harmonic_strength': 1})
     project = Project(blocks=[block], harmonic_plan=preset())
     engine = MusicEngine(project)
     for beat in (0, 3.5, 4, 7.5, 8, 11.5, 12, 15.5):

@@ -57,6 +57,13 @@ def test_knobs_work_with_parent_kit_selected(inspector, key, value):
     panel = win.drum_kit_layout.itemAt(0).widget()
     panel.findChild(gui.ParamKnob, key).setValue(value)
     QTest.qWait(65)
+    # A native layout pass can consume this interval before the coalesced
+    # 35 ms callback is dispatched. Assert its completion, not machine speed.
+    for _ in range(100):
+        if id(drum) not in getattr(win, "_kit_regen_pending", set()):
+            break
+        QTest.qWait(10)
+    assert id(drum) not in win._kit_regen_pending
     assert not errors
     assert drum.parameters[key] == value
     assert win.drum_kit_layout.itemAt(0).widget() is panel

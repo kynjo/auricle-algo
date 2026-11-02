@@ -137,6 +137,8 @@ def test_hold_recall_save_and_reload_preserve_material(tmp_path):
     assert restored.motif_variant(restored.project.blocks[0], 0).token == first.token
     saved = engine.capture_motif(block, current_variant=True)
     assert saved.notes == first.motif.notes
+    assert saved.parent_id == "theme"
+    assert saved.transformation == "development"
     assert block.parameters["motif_development"] == "off"
     assert "motif_hold" not in block.parameters
     assert saved.id != "theme" and saved.id in project.motifs
@@ -229,3 +231,30 @@ def test_early_drum_variant_does_not_advance_siblings():
     assert engine.motif_development.current(first.id).cycle == 1
     assert engine.motif_development.current(second.id) is previous
     assert previous.cycle == 0 and second.outputs == outputs
+
+@pytest.mark.parametrize("mode", ["sequence", "inversion", "call_response", "retrograde"])
+@pytest.mark.parametrize("role", ["MELODY", "DRUM"])
+def test_structured_development_modes_are_deterministic_and_anchor_safe(mode, role):
+    source = theme(role)
+    original = asdict(source)
+    config = settings({"motif_development": mode, "motif_amount": .85})
+    first = develop(source, 1, .5, config, "Minor", 311)
+    second = develop(source, 1, .5, config, "Minor", 311)
+    assert first == second
+    assert asdict(source) == original
+    anchors = anchor_slots(source, .5)
+    for index in anchors:
+        assert (first.motif.notes[index], first.motif.rhythm[index], first.motif.velocity[index]) == (
+            source.notes[index], source.rhythm[index], source.velocity[index])
+    assert first.label.startswith("Variation")
+
+
+def test_call_response_odd_length_uses_an_immutable_call_snapshot():
+    source = Motif("odd", "Odd", notes=[0, 2, 4, 5, 7, 9, 11],
+                   rhythm=[1, 0, 1, 1, 0, 1, 1],
+                   velocity=[.9, 0, .6, .8, 0, .7, .75], step_beats=.5)
+    config = settings({"motif_development": "call_response", "motif_amount": .9})
+    a = develop(source, 1, .5, config, "Major", 9)
+    b = develop(source, 1, .5, config, "Major", 9)
+    assert a == b
+    assert a.motif.steps == source.steps

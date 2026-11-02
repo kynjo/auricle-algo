@@ -31,7 +31,10 @@ def test_accordion_state_is_idempotent():
 
 def test_stop_is_not_a_checkable_state_button():
     source = SOURCE.read_text()
-    assert 'self.stop = QPushButton("STOP"); self.stop.setObjectName("transportStop")' in source
+    assert 'self.play = QPushButton(); self.play.setObjectName("transportPlay")' in source
+    assert 'transport_icon("play", "#ffffff")' in source
+    assert 'transport_icon("stop", "#ffffff")' in source
+    assert 'color = "#111111" if is_light_theme(theme) else "#ffffff"' in source
     assert 'self.stop.setCheckable(True)' not in source
     assert 'self.stop.setChecked(not running)' not in source
 

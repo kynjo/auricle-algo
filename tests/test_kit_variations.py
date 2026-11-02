@@ -5,7 +5,7 @@ import math
 import pytest
 
 from auricle_core import Block, Mutator, Process, MusicEngine, load_project, save_project
-from auricle_catalogs import MUTATORS
+from auricle_catalogs import MUTATORS, mutators_for_target
 from coordinated_kit import CREATIVE_DEFAULTS, METERS, KitCoordinator
 from test_coordinated_kit import kit, setup_transport
 from test_kit_preview_lifecycle import inspector
@@ -48,8 +48,8 @@ def test_three_four_and_six_eight_have_different_grouping_and_backbeat():
     drum.parameters["kit_meter"] = "6/8"
     b = engine.kit_plan(voices[0], 0)
     assert a.length == b.length == 12
-    assert {i for i in range(12) if a.at(voices[1].id, i).anchor} == {4, 8}
-    assert {i for i in range(12) if b.at(voices[1].id, i).anchor} == {6}
+    assert {i for i in range(12) if any(a.at(voices[v].id, i).anchor for v in (1, 4))} == {4, 8}
+    assert {i for i in range(12) if any(b.at(voices[v].id, i).anchor for v in (1, 4))} == {6}
 
 
 @pytest.mark.parametrize("mode", ["SEQ", "LIVE"])
@@ -86,10 +86,16 @@ def test_complexity_syncopation_variation_and_new_variant_change_reproducible_pa
     new = engine.kit_plan(voices[0], 0)
     assert new.rows != varied.rows
     assert new.rows == KitCoordinator().plan(drum, project.seed, 0).rows
-    # Core beats survive every creative setting.
+    # Core beats survive every creative setting; clap/snare and open/closed
+    # hats can exchange ownership of those beats.
     for plan in (simple, sync, varied, new):
-        for vid, row in original.rows.items():
-            assert all(not s.anchor or plan.at(vid, i).anchor for i, s in enumerate(row))
+        for i in range(plan.length):
+            if i % 16 in (0, 8):
+                assert plan.at(voices[0].id, i).anchor
+            if i % 16 in (4, 12):
+                assert sum(plan.at(voices[v].id, i).anchor for v in (1, 4)) == 1
+            if i % 2 == 0:
+                assert sum(plan.at(voices[v].id, i).anchor for v in (2, 3)) == 1
 
 
 def processing_kit(mode, coordinated=False, pattern="1,0,0,0,0,0,0,0"):
@@ -175,14 +181,13 @@ def test_parent_processes_change_every_voice_and_child_accent_survives(mode):
     assert capture(engine, voices[1], 8)["rhythm"] == [0, 1, 0, 1, 0, 1, 0, 1]
 
 
-@pytest.mark.parametrize("name", MUTATORS)
+@pytest.mark.parametrize("name", mutators_for_target("rhythm"))
 @pytest.mark.parametrize("mode", ["SEQ", "LIVE"])
 def test_every_rhythm_mutator_changes_a_nonuniform_drum_pattern(name, mode):
     project, drum, voices, engine = processing_kit(mode, pattern="1,0,1,0,0,1,0,0")
     before = capture(engine, voices[0], 8)["rhythm"]
     engine.reset_live()
-    amount = {"Transpose": .8, "Octave": .8, "Mutate": 1., "Humanize": 1.,
-              "Mirror": .65, "Probability": 0., "Scale": 0.}.get(name, .4)
+    amount = {"Mutate": 1., "Mirror": 1., "Probability": 0.}.get(name, .4)
     drum.mutators = [Mutator(name, amount, "rhythm")]
     output = capture(engine, voices[0], 8)
     assert len(output["rhythm"]) == 8
@@ -273,16 +278,19 @@ def test_controls_round_trip_and_grid_updates_in_place_without_deleting_the_insp
     win._refresh_inspector()
     panel = win.drum_kit_layout.itemAt(0).widget()
     for meter, groups in KIT_METERS_FOR_TEST:
+        win.engine.clock.position_beats = 0
         panel.meter_selector.setCurrentIndex(panel.meter_selector.findData(meter))
-        assert panel.plan_ruler.steps == sum(groups)
-        assert all(len(lane.steps) == sum(groups) and lane.groups == groups for lane in panel.plan_lanes.values())
+        assert panel.plan_ruler.steps == win.project.length
+        assert all(len(lane.steps) == win.project.length and sum(lane.groups) == win.project.length
+                   and lane.bar_starts == tuple(range(0, win.project.length, sum(groups)))
+                   for lane in panel.plan_lanes.values())
         win.transport.running = True
         try:
             for step in range(sum(groups)):
                 win.engine.clock.position_beats = step * .25
                 panel.update_position()
-                assert panel.plan_ruler.cursor == step
-                assert all(lane.cursor == step for lane in panel.plan_lanes.values())
+                assert panel.plan_ruler.cursor == step % win.project.length
+                assert all(lane.cursor == step % win.project.length for lane in panel.plan_lanes.values())
         finally:
             win.transport.running = False
     for key in CREATIVE_DEFAULTS:
