@@ -1,10 +1,10 @@
 # 🎶 Auricle — Algorithmic MIDI Generator
-<img width="1860" height="1080" alt="изображение" src="https://github.com/user-attachments/assets/318fb1fd-f722-49e4-8706-01f9e635c678" />
+
 
 Auricle is a desktop MIDI generator for synthesizers, drum machines, and DAWs. Build parts from independent blocks, develop motifs, and shape the structure of your composition.
 
 <!-- Main screenshot -->
-![Auricle main window](docs/screenshots/auricle-v2.0.png)
+<img width="1860" height="1080" alt="изображение" src="https://github.com/user-attachments/assets/318fb1fd-f722-49e4-8706-01f9e635c678" />
 
 - 🧩 **Five block types:** DRUM, BASS, MELODY, CHORD, and PAD, each with its own algorithms and SEQ/LIVE modes.
 - 🥁 **Rhythm and articulation:** coordinated Drum Kits, variations, syncopation, Ratchet and Flam; Strum for chords and pads.
