@@ -10,7 +10,8 @@ import math
 from auricle_drum import kit_random
 
 
-RHYTHM_ENGINES = (("Role grid", "classic"), ("Rhythm map", "map"))
+RHYTHM_ENGINES = (("Role grid", "classic"), ("Rhythm map", "map"),
+                  ("Metric / Barlow", "metric"))
 MAP_DEFAULTS = {"kit_map_x": .25, "kit_map_y": .25, "kit_motif_change": .45}
 LINK_OPERATIONS = (
     ("Support / OR", "support"),
@@ -78,7 +79,8 @@ def integer(value, default, low, high):
 
 
 def rhythm_engine(drum):
-    return "map" if drum.parameters.get("kit_engine") == "map" else "classic"
+    value = drum.parameters.get("kit_engine")
+    return value if value in ("map", "metric") else "classic"
 
 
 def map_scores(role, steps, x, y, groups=None):

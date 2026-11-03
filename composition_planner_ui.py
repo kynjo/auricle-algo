@@ -1479,7 +1479,12 @@ class CompositionPlannerPanel(QWidget):
         self.composition_tabs.setTabToolTip(2, "Project-wide Musical Director and Harmonic Plan")
         self.automation_panel = SectionAutomationPanel(self)
         self.composition_tabs.addTab(self.automation_panel, "AUTOMATION")
-        self.composition_tabs.setTabToolTip(3, "Exact parameter values and curves for this section, with timing and source policy")
+        self.composition_tabs.setTabToolTip(3, "Section values, time curves and Energy/Tension responses with timing and source policy")
+        # Hidden section/global pages have wider minimum sizes. Let the
+        # responsive automation editor use the viewport instead of clipping.
+        self.composition_tabs.currentChanged.connect(lambda _index: self.composition_tabs.setSizePolicy(
+            QSizePolicy.Ignored if self.composition_tabs.currentWidget() is self.automation_panel else QSizePolicy.Expanding,
+            QSizePolicy.Expanding))
         root.addWidget(self.composition_tabs, 1)
         self.advanced.hide()
         self.editor_scroll.viewport().installEventFilter(self)

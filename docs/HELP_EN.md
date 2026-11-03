@@ -10,6 +10,7 @@ This reference follows the current interface. English control names are kept so 
 - [Block parameters](#parameters)
 - [Generators](#generators)
 - [Drum Kit](#drums)
+- [CHORD / PAD · Strum](#strum)
 - [Motifs](#motifs)
 - [Mutators](#mutators)
 - [Process Layers](#processes)
@@ -624,12 +625,15 @@ Particles bounce inside a box, triangle, hexagon or circle. Quantized boundary c
 | **Phrase bars** | Length of one coordinated kit phrase, in kit-meter bars. |
 | **Keep beat** | Restores core rhythmic anchors after processing. Disable to allow more radical rhythmic displacement. |
 | **New variant** | Reproducible variant number for a different coordinated drum plan. |
-| **Complexity** | Adds detail to the coordinated drum plan. |
-| **Syncopation** | Shifts emphasis toward offbeat positions. |
+| **Complexity** | Adds detail to the coordinated drum plan; in Metric / Barlow it increases secondary-role activity. |
+| **Syncopation · PS** | Metric / Barlow: probability 0–1 of anticipating a pulse by one sixteenth; Fragment limits consecutive anticipations. Other engines shift added hits towards offbeats. |
 | **Tom activity** | Activity of tom-role voices in coordinated phrases and fills. |
 | **Variation** | Phrase-to-phrase changes of the coordinated pattern. |
 | **Voice role** | Kick/Snare/Hat/Clap/Tom/Perc coordinate by role; Free keeps an independent generator. Auto roles uses names then GM notes. |
-| **Engine** | Role grid uses the classic role plan; Rhythm map interpolates related groove skeletons. |
+| **Engine** | Role grid uses the classic role plan; Rhythm map interpolates groove skeletons; Metric / Barlow derives event probabilities from the meter hierarchy. |
+| **Density R** | Metric / Barlow: 0–1 controls weight ranges at each metric stratum. Zero keeps a sparse metric skeleton; Master Density zero silences the kit. |
+| **Strength M** | Metric / Barlow: 1 follows metric weights, 0 gives uniform probabilities while preserving their expected event count before coordination. Lower M shuffles accent placement. |
+| **Fragment** | Metric / Barlow: 1–8 sixteenth-note pulses, the maximum consecutive anticipations. Every event moves by one pulse, not by the fragment length; a capped run resolves at the next metric group. |
 | **Straight → Broken** | Horizontal Rhythm map coordinate: straight at the left, broken at the right. |
 | **Pocket → Driving** | Vertical Rhythm map coordinate: pocket at the bottom, driving at the top. |
 | **Motif change** | Strength of changes between Theme, Variation, Answer, Fill and Return. |
@@ -637,6 +641,42 @@ Particles bounce inside a box, triangle, hexagon or circle. Quantized boundary c
 | **Return every** | Return to the original theme after this many kit phrases. |
 | **Voice links** | Enables internal rhythmic relationships between drum voices; links read the same frozen candidate plan. |
 | **Voice links editor** | Source/destination identify voices. OR supports, AND intersects, XOR separates; answer, complement, copy, gap fill, interlock and accent shape the destination. |
+
+<a name="drum-metric"></a>
+
+### Metric / Barlow
+
+An independent adaptation of Sioros & Guedes, Automatic Rhythmic Performance in Max/MSP: the kin.rhythmicator (NIME 2011, pp. 88–91). No Max patch or runtime is required. Select Metric / Barlow in the rhythm engine; Settings replaces the groove map with R, M, Fragment and a probability preview. Syncopation in the common kit row is PS.
+
+The meter is factored into ordered strata, then Barlow indispensability ranks determine pulse weights. 3/4 uses 3×2×2, 6/8 uses 2×3×2; their twelve sixteenths therefore have different accents. Additive 7/8 is an Auricle extension: a 3×3×2 parent is shortened to the 2+2+3 grouping while preserving rank order.
+
+At stratum i the weights span R^i…R^(i−1). Event probability is p=n·W^M, with n=ΣW/Σ(W^M). M=0 gives uniform probabilities with the same expected event count, including when R=0. Velocity uses a fixed reference profile independent of R; reducing M shuffles its accent distribution. The preview shows this metric model before roles, anticipation, links, fills and output thinning, so it is not an exact note-count display.
+
+Auricle orchestrates this model by role: kick owns the downbeat, snare/clap emphasize the backbeat, hats are denser and tom activity follows Toms. Complexity raises secondary activity. Half-time moves the principal snare accent to the bar midpoint; Broken changes percussion placement. Free voices remain independent. Master Density, voice probabilities and processing still shape the audible result.
+
+PS anticipates a pulse by exactly one sixteenth, carrying its probability and accent. Fragment caps consecutive anticipations; after the cap the next metric group resolves normally. A shorter run may suppress the immediately following stress. Collisions merge into one hit, and the first pulse of every bar remains a resolution point. This boundary rule is an Auricle adaptation that prevents notes escaping into the previous section or loop. PS=1 therefore cannot rotate the whole bar. Keep beat protects the resulting plan rather than recreating an anticipated source beat.
+
+Motifs, Development, Return, Composition cadences, voice links and shared fills also apply to Metric. Variation zero repeats stochastic choices in Theme/Return; optional Motifs can still develop the phrase. Replay, seeking and New variant remain deterministic. R and M use 0–1 automation; Fragment uses integer 1–8 sixteenths. MIDI Learn and the normal parameter-influence highlight work on all three controls.
+
+<a name="drum-articulation"></a>
+
+### Drum Voice · Ratchet + Flam
+
+| Parameter | Description |
+| --- | --- |
+| **Ratchet chance** | 0–1 chance of subdividing an accepted Drum Voice hit. Zero bypasses Ratchet. Source rests and source probability are evaluated before articulation. |
+| **Ratchet count** | Integer 1–8 principal hits, including the original hit. Flam can add one grace before the first principal. |
+| **Ratchet spread** | 0.1–1 of the source interval occupied by the repeat grid. One spreads repeats evenly across that interval; smaller values make a tighter cluster. |
+| **Ratchet decay** | 0–1 velocity multiplier for each subsequent principal hit. One keeps dynamics equal; zero silences later repeats. |
+| **Flam chance** | 0–1 chance of a quiet grace at the source onset, followed by the principal after Gap. Only the first ratchet principal gets a grace. Zero bypasses Flam. |
+| **Flam gap · beats** | 0.01–0.12 quarter-note beats; 0.04 is 20 ms at 120 BPM. Clamped to 45% of a repeat subdivision so it cannot cross the next hit. The principal is delayed after the grace in both SEQ and LIVE. |
+| **Flam grace velocity** | 0.05–1 multiplier of the source velocity for the grace. The principal retains the source velocity. |
+
+Select a Drum Voice and open DRUM ARTICULATION in its Block Inspector. Settings belong to that voice. Both Chance knobs default to zero, preserving existing projects. Ratchet and Flam act after voice/kit processing, source probability and Composition gates, in SEQ, LIVE, Perform and every Coordinated Kit engine, including Metric / Barlow. They use the fixed voice MIDI note and route.
+
+Ratchet Count includes the first principal. With Flam, the grace sounds on the original onset and the principal follows after Gap: this causal rule works identically in SEQ and LIVE without looking ahead. Only that first principal receives a grace, so a source hit produces at most nine notes. Gaps, onsets and gates follow musical time across BPM edits; short gates prevent repeat overlap.
+
+All seven knobs support MIDI Learn, parameter-influence dots and Composition Set/Add/Multiply automation in their native ranges. Source/Plan grids remain the accepted trigger pattern; MIDI Monitor and piano-roll history receive the actual emitted sub-hits. An articulation snapshots its settings at the source hit; new values shape the next hit. Ratchet Chance zero also cancels outstanding repeats. Stop, Panic, Mute, seek, routing/mode changes and Composition section/loop boundaries cannot leak old queued notes; late worker ticks discard overdue repeats instead of catching up with a burst.
 
 <a name="drum-links"></a>
 
@@ -656,6 +696,27 @@ Particles bounce inside a box, triangle, hexagon or circle. Quantized boundary c
 Delay is causal time; Phase is cyclic placement. Links read a frozen candidate plan, so cycles remain deterministic and anchors/fills remain protected. A musical kit preset enables Rhythm map, motifs and suggested links while preserving generators, processing and MIDI routes. Auto roles infers names/GM notes without changing routes. Copy/Paste sound preserves voice identity, role, mode, mute and routing; Undo paste restores the previous sound.
 
 Plan shows the coordinated candidate plan; Output shows accepted generator output, not incoming MIDI feedback; Source shows generator material. Length edits source steps (up to 128); paging shows up to 32 steps at once.
+
+<a name="strum"></a>
+
+## CHORD / PAD · Strum
+
+| Parameter | Description |
+| --- | --- |
+| **Strum chance** | CHORD/PAD: 0–1 probability of strumming an accepted chord; zero preserves simultaneous notes. Probability is drawn once for the whole chord. |
+| **Strum gap · beats** | Requested spacing between notes, 0–0.5 quarter-note beats. 0.04 is 20 ms at 120 BPM. Wide strums compress to fit the source interval, gate and harmonic cutoff. |
+| **Strum dynamics** | −1…+1 velocity slope in playing order: negative fades, positive grows, zero preserves source velocity before Humanize. Notes remain within MIDI velocity limits. |
+| **Strum humanize** | 0–1 repeatable variation of gaps and velocity. Timing varies by at most 20% of a subdivision, velocity by 10%; note order and event boundaries stay protected. |
+| **Strum direction** | Up/Down follow actual MIDI pitch after voicing. Alternate changes direction on source steps, including rests; Random shuffles existing tones deterministically. |
+| **Strum gate** | Shared end releases all tones at the original chord end. Per note gives each tone its full source duration. Both respect harmonic, Dialogue and transport boundaries. |
+
+STRUM in the CHORD/PAD Block Inspector plays the finished voicing one note at a time. It runs after source probability, register/voicing, Dialogue and Composition processing, and uses the existing musical event scheduler in SEQ, LIVE, Perform and Composition. Chance defaults to zero, so existing projects retain their simultaneous chord output. Single-note events are unchanged.
+
+Up and Down sort actual MIDI pitches after inversion, spread and voice leading. Alternate uses the absolute source-step parity; rests advance that parity too, so seeking needs no playback history. Random, chance and Humanize are reproducible for the same seed, block and source beat. Strum preserves chord tones and removes duplicate physical MIDI notes caused by clipping.
+
+Gap is a requested interval in quarter-note beats, not milliseconds. A strum occupies at most 90% of the available source interval/gate or the remaining harmony/Dialogue window; wider settings compress automatically. Humanize keeps notes ordered. Shared end shortens later notes to the original chord deadline, even after a late worker tick or BPM change. Per note retains each note's source duration, allowing legato overlap as configured by Gate. Harmonic cutoffs still take precedence.
+
+The four knobs support MIDI Learn and continuous Composition automation in native ranges. Direction and Gate support discrete Composition assignments through their context menu; source dots show active influences and the selectors show the effective choice without editing the manual value. Settings and voicing are captured once per accepted chord; later edits affect the next chord. Stop, Panic, Mute, seek, routing/mode/type changes and Composition section/loop changes cancel old pending tones. MIDI Monitor and piano-roll history receive individual emitted notes; source/plan buffers remain unchanged.
 
 <a name="motifs"></a>
 
@@ -1081,8 +1142,13 @@ The horizontal scale uses Length (steps), independent of the source pattern. Dur
 
 | Parameter | Description |
 | --- | --- |
+| **Emitted notes** | Piano roll reads successful MIDI Note On/Off with worker timestamps, actual pitch, velocity, durations and timing shifts. Ratchet is purple, Flam grace is amber and Strum is teal. Hover notes for precise onset, length and source offset. With no MIDI port, accepted generated notes are labelled separately. Before playback, buffer/articulation preview does not predict future Composition, Dialogue or random gates. |
 | **Length (steps)** | Fixed visible length, 1–4096 sixteenth-note steps. One step is 0.25 quarter-note beat. Changes the view only, independently of pattern length. Sparse LIVE notes never expand the time scale. Remembered across blocks and application restarts. |
-| **FREEZE** | Hold note history, time anchor and tempo scale. Length remains adjustable. Uncheck to resume current history; Stop also holds the time anchor. |
+| **FREEZE** | Hold emitted-note history, articulation colors, note endings, time anchor and tempo scale. Length remains adjustable. Uncheck to resume current history; Stop also holds the time anchor. |
+
+During playback the roll shows dispatched notes, not source triggers: every emitted Ratchet repeat, the causal Flam grace/principal pair and each shifted Strum tone. Bar widths follow actual MIDI Note Off, including retrigger, choke, Mute and Stop; held notes grow only to the current view anchor. Onset and release times are captured before the GUI queue. The grid follows quarter-note beats across tempo changes; the seconds caption is the equivalent span at the current tempo. Hover a note for pitch, velocity, onset, length, channel and source offset. Canceled and skipped sub-hits are absent. MIDI Monitor may remain off.
+
+Without a physical MIDI port the roll labels accepted generated notes separately and uses their planned gates. Before the first playback it previews the current buffers through the same Ratchet/Flam/Strum expansion; this preview cannot predict later section changes, Dialogue or random gates. Source buffers remain unchanged. Freeze preserves an immutable snapshot, including sounding tails and the musical anchor, through Inspector rebuilds. Play/seek starts a fresh unfrozen capture; a frozen snapshot remains until released. History is bounded to 8192 notes per owner and 32768 total.
 
 <a name="parameter-automation"></a>
 
@@ -1093,23 +1159,30 @@ AUTOMATION edits exact block/voice parameters for the selected section. Right-cl
 | Parameter | Description |
 | --- | --- |
 | **Add parameter** | Choose an instrument/voice and a parameter. Existing assignments in the selected section are opened without duplication. Assigning never starts playback. |
+| **Parameter family** | Filter assignments or destinations by Ratchet, Flam or Strum. Drum articulations target individual voices or single Drum/Percussion blocks; Strum targets CHORD/PAD. Filtering preserves all lanes. |
+| **Energy / Tension source** | Read the effective section macro, including its section curve and Blend transition. The response curve maps input 0–100% to the parameter's output range. No implicit articulation links are added. |
+| **Reverse input** | Evaluate the response at 1 minus the macro value. The graph and Input % show this reversed input; the output range keeps its own units. |
 | **Remove lane** | Remove the selected lane; its manual base and remaining influences are restored. Undo restores the assignment. |
 | **Destination** | A block or individual Drum Voice and its exact parameter. Generator-specific lanes wait until their generator is active; missing targets remain visible for repair or Undo. |
 | **Filter** | Search assigned lanes by instrument, caption or parameter key. The instrument selector narrows the list without altering assignments. |
 | **Automation lanes** | One direct assignment per parameter and section. Filled green means contributing; an outline means assigned or bypassed. This page edits the selected section, while playback can be in another. |
-| **Value / Curve** | Value holds a constant target. Curve maps points over the section duration. Choices/text use Value snapshots. |
+| **Value / Section curve / Macro response** | Value holds a target. Section curve follows section time; Macro response maps effective Energy/Tension through a separate response curve. Choices/text use Value. |
 | **Set / Add / Multiply** | Set supplies an absolute target. Add and Multiply derive a target from the latest authored manual base, never from the previous automated result; they do not accumulate. |
 | **Apply timing** | Auto chooses musical timing for the parameter. Continuous follows beats; 1/16, Beat, Bar, Source cycle and Section start hold values between boundaries. Structural values cannot be continuous. Editing a held lane waits for the next boundary; seek reconstructs the destination immediately. |
 | **Automation weight** | 0 bypasses this lane; 1 requests full Composition weight. The shared per-parameter policy still decides the actual contribution. Nonzero choice/text weights enable discrete priority selection. |
 | **Target value** | Exact value in the parameter's own units. Ranges and integer/boolean types are enforced. Existing sounding notes keep their scheduled endings. |
-| **Parameter curve** | Double-click adds a point; drag moves it; Delete/right-click removes an interior point. Endpoints stay at section start/end. Linear, Smooth and Step use musical section progress. |
+| **Parameter curve** | Double-click adds a point; drag moves it; Delete/right-click removes an interior point. Endpoints stay at 0/100%. Section curve uses section progress; Macro response uses macro input (after Reverse). Linear, Smooth and Step interpolate output values. |
 | **Curve range** | The graph and point fields share the selected parameter limits and units. Length follows the current project buffer; Density uses 0–1. Add uses deltas; Multiply uses dimensionless factors. Valid subranges are preserved; fixed limits are locked. |
-| **Exact point** | Edit time in quarter-note beats and value in parameter units. Integer parameters snap values to whole numbers; Multiply keeps fractional factors. Snap 1/16 aligns dragged time to 0.25 beat in every meter. |
+| **Exact point** | Edit X in quarter-note beats (Section curve) or input percent (Macro response), and Y in parameter units. Integer parameters snap values to whole numbers; Multiply keeps fractional factors. Snap 1/16 aligns dragged time to 0.25 beat in every meter. |
 | **Full parameter range** | Restore the selected parameter's current full range without removing curve points. Length follows the project buffer. |
 | **Ramp / Flat** | Ramp sets the endpoints to the curve range minimum/maximum. Flat holds the selected point value across the section. |
 | **Shared influence policy** | Composition, Technique, Modulation/Relations and Macro resolve through the same parameter policy: Priority, Weighted blend or Manual only. Direct parameter automation and final note-stream processing are separate stages. |
 
 Default priority is Composition → Technique → Modulation → Macro; partial weights reveal lower layers. Old source orders are preserved below the new Composition category. Numeric targets clamp and round after resolution. Choices/text always use stable source priority, including in blend mode. Continuous SEQ generation is batched to sixteenth-note boundaries; source-cycle timing captures the manual cycle at section entry. Stop/bypass removes automation and reveals the latest manual base. Section entry, looping and seek evaluate musical position without replaying earlier UI edits.
+
+Ratchet/Flam can target individual Drum Voices or single Drum/Percussion blocks; Strum targets CHORD/PAD. Use the family filter to find them. Each section stores its own Value, Section curve or Macro response assignment. Strum Direction/Gate are Value snapshots at musical boundaries. Numeric output uses native units: Ratchet Count is 1–8 hits, Flam Gap is 0.01–0.12 beats, Strum Spacing is 0–0.5 beats and Strum Dynamics is −1…+1. These controls affect future accepted events without rebuilding source patterns or resetting LIVE phase; scheduled hits keep their existing settings.
+
+Energy/Tension links are explicit: choose Macro response and its Source, or right-click an articulation control and choose Composition: link Energy/Tension. The input is the effective section macro, including section macro curves and Blend transitions. X is input 0–100%; Y is the selected target range. Reverse input evaluates 1−input. Set writes the mapped target; Add/Multiply apply an offset/factor to the latest manual base, then clamp and round. Weight and Parameter influences use the existing Composition policy and green highlights. Held timing samples the macro only at the selected boundary. Stop, disabled lanes and section changes release the layer. Section and response curves are stored separately, so switching modes preserves both.
 
 <a name="troubleshooting"></a>
 

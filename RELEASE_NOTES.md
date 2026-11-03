@@ -1,22 +1,11 @@
-# Auricle v2.0
+# Auricle v2.0.1
 
-Облегчён интерфейс: обновляются видимые панели, Drum Kit и карточки сохраняются
-при обычных изменениях, а профиль algo_conf применяет только сохранённые параметры.
-Callbacks отменяются при удалении владельца; планировщик не воспроизводит очереди
-устаревших опросов после задержки. [Описание](docs/UI_PERFORMANCE_FIX_RU.md).
+- Ratchet и Flam для барабанных голосов; Strum для CHORD/PAD.
+- Точные назначения артикуляций из Composition: секционные значения и кривые, настраиваемый отклик на Energy/Tension, существующие приоритеты и подсветка.
+- Piano roll фактического MIDI: отдельные повторы/предудары/тона Strum, реальные окончания, velocity, сдвиги, цвета, подсказки, фиксированная длина и Freeze.
+- Пакетное обновление истории без дополнительных таймеров; сохранены исправления Inspector, Groove Map и MIDI Learn.
+- Единая SVG-иконка программы и нативных приложений.
+- Чистый дистрибутив без старых тестов и служебных файлов; автоматическая сборка Windows x64, Linux x64, macOS Apple Silicon и macOS Intel.
+- Все нативные сборки, исходники, Python wheel/sdist и SHA256SUMS.txt публикуются одним релизом после проверок.
 
-Musical Drum Kit: согласованная карта ритмов Map X/Y, развитие мотивов
-Theme / Variation / Answer / Fill / Return и редактируемые связи voices.
-Density сохраняет основу дольше украшений; каденции учитывают конец секции
-Composition. Все три направления включаются кнопкой **Musical kit** в Drum.
-
-[Руководство](docs/DRUM_MUSICAL_RU.md).
-Демо: `examples/musical_drum_demo.json`.
-
-Объединены Composition и Perform. Фразы и техники назначаются секциям,
-цветная форма и компактные карточки показывают развитие исполнения.
-Основной Play сохраняет независимое прослушивание Blocks.
-
-Полная история релиза: [CHANGELOG.md](CHANGELOG.md).
-Руководство нового интерфейса: [UNIFIED_COMPOSITION_RU.md](docs/UNIFIED_COMPOSITION_RU.md).
-Демо: `examples/unified_composition_demo.json`.
+Windows: portable ZIP. Linux: AppImage или tar.gz. macOS: отдельные DMG для Apple Silicon и Intel. Программа генерирует MIDI; для звука нужен инструмент или DAW.

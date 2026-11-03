@@ -1,18 +1,18 @@
 include README.md CHANGELOG.md RELEASE_NOTES.md
 include Auricle.spec requirements*.txt *.sh *.bat .gitignore .gitattributes
-include create_demo_project.py experimental_generators.py midi_expression.py midi_expression_ui.py midi_learn.py midi_learn_ui.py
 recursive-include assets *.png *.svg *.ico *.icns *.py
-recursive-include docs *.md *.png *.json *.txt
+recursive-include docs *.md *.png
 recursive-include examples *.json
-recursive-include projects *.json *.md
+include projects/README.md
 recursive-include packaging *.py *.sh
-recursive-include tests *.py
-recursive-include .github *.yml *.md
-global-exclude *.py[cod] *.log .DS_Store Thumbs.db
-prune .pytest_cache
-prune .mypy_cache
-prune .ruff_cache
-prune recovery
-prune __pycache__
+recursive-include .github *.yml
+prune tests
+prune build
+prune dist
+prune out
+prune AppDir
 prune .venv
 prune .venv-build
+prune .pytest_cache
+prune __pycache__
+global-exclude *.py[cod] *.log .DS_Store Thumbs.db

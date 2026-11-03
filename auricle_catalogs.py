@@ -111,6 +111,7 @@ NON_NUMERIC_PARAMETERS = frozenset({
     "motif_development", "motif_amount", "motif_every", "motif_return", "motif_hold",
     "kit_coordinated", "kit_style", "kit_phrase_bars", "kit_role", "phrase_awareness",
     "kit_engine", "kit_motif_enabled", "kit_motif_return", "kit_links_enabled", "kit_voice_links",
+    "strum_direction", "strum_gate_mode",
     "turing_preset", "turing_tape", "turing_mode", "orbit_mode", "orbit_output",
     "geometry_shape", "geometry_mode",
 })
@@ -125,6 +126,10 @@ FLOAT_MOD_KEYS = {
     "kit_density", "kit_swing", "kit_humanize", "kit_fill", "kit_complexity",
     "kit_syncopation", "kit_tom_activity", "kit_variation",
     "kit_map_x", "kit_map_y", "kit_motif_change",
+    "kit_metric_density", "kit_metric_strength",
+    "drum_ratchet_probability", "drum_ratchet_spread", "drum_ratchet_decay",
+    "drum_flam_probability", "drum_flam_spacing", "drum_flam_velocity",
+    "strum_probability", "strum_spacing", "strum_dynamics", "strum_humanize",
     "fill_density", "event_probability", "anchor_strength", "support_probability", "ornament_probability",
     "transpose", "octave", "tm_density", "fib_density",
     "markov_rest", "markov_leap", "markov_stay", "walk_return_bias", "walk_drift",

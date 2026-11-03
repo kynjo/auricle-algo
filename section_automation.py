@@ -9,17 +9,42 @@ import uuid
 from auricle_catalogs import (COMMON_MOD_PARAMETERS, GENERATOR_MOD_PARAMETERS,
                              FLOAT_MOD_KEYS, GENERATORS, SCALES, ROLE_PROFILES)
 from composition_automation import normalize_curve, curve_value
+from metric_kit import METRIC_PARAMETERS
+from drum_articulation import ARTICULATION_PARAMETERS, supports_articulation
+from strum import STRUM_PARAMETERS, STRUM_CHOICES, supports_strum
 
 PREFIX = 'composition-auto:'
 TIMINGS = ('auto', 'continuous', 'step', 'beat', 'bar', 'cycle', 'section')
 OPERATIONS = ('set', 'add', 'multiply')
 MAX_TRACKS = 128
+MACRO_SOURCES = ('energy', 'tension')
+ARTICULATION_NUMERIC_KEYS = frozenset((*ARTICULATION_PARAMETERS, *STRUM_PARAMETERS))
+ARTICULATION_KEYS = ARTICULATION_NUMERIC_KEYS | frozenset(STRUM_CHOICES)
+
+
+def articulation_family(key):
+    if key.startswith('drum_ratchet_'): return 'ratchet'
+    if key.startswith('drum_flam_'): return 'flam'
+    return 'strum' if key in (*STRUM_PARAMETERS, *STRUM_CHOICES) else None
+
+
+def articulation_keys(block):
+    if supports_articulation(block): return frozenset(ARTICULATION_PARAMETERS)
+    if supports_strum(block): return frozenset((*STRUM_PARAMETERS, *STRUM_CHOICES))
+    return frozenset()
+
+
+def curve_field(track):
+    return 'macro_curve' if track.get('mode') == 'macro' else 'curve'
+
+
 LENGTH_KEYS = {'structure_length', 'euclidean_steps', 'bres_steps', 'poly_a', 'poly_b',
                'timing_rate', 'variation_seed', 'ca_rule', 'ca_generations', 'ls_iterations'}
 ROTATION_KEYS = {'structure_rotation', 'euclidean_rotation', 'bres_rotation', 'tm_rotation',
                  'debruijn_rotation', 'pattern_rotation', 'orbit_rotation', 'fib_offset'}
 INTEGER_CONTROLS = {'scale_root', 'transpose', 'octave', 'pitch_range', 'role_center', 'role_width',
-                    'harmony_size', 'harmony_spread', 'harmony_inversion', 'groove_offset'}
+                    'harmony_size', 'harmony_spread', 'harmony_inversion', 'groove_offset',
+                    'kit_metric_fragment', 'drum_ratchet_count'}
 UNITS = {
     **dict.fromkeys(('structure_length', 'euclidean_steps', 'bres_steps', 'groove_offset', *ROTATION_KEYS), 'steps'),
     **dict.fromkeys(('pulses', 'bres_pulses'), 'hits'),
@@ -34,6 +59,10 @@ UNITS = {
     **dict.fromkeys(('interval_step', 'interval_range'), 'st'),
     'geometry_speed': '×',
     'scale_root': 'MIDI', 'harmony_size': 'voices',
+    'kit_metric_fragment': '16ths',
+    'drum_ratchet_count': 'hits', 'drum_flam_spacing': 'beats',
+    'drum_ratchet_decay': '×',
+    'strum_spacing': 'beats',
 }
 
 
@@ -104,6 +133,9 @@ def parameter_specs(engine, block):
     catalog = dict(engine.parameter_catalog(block))
     owners = {}
     known = dict(COMMON_MOD_PARAMETERS)
+    known.update(METRIC_PARAMETERS)
+    known.update(ARTICULATION_PARAMETERS)
+    known.update(STRUM_PARAMETERS)
     for algorithm, values in GENERATOR_MOD_PARAMETERS.items():
         for key, limits in values.items():
             # A stored inactive-generator value is not its definition. Replace
@@ -190,6 +222,9 @@ def parameter_specs(engine, block):
             ('geometry_mode', ('Rhythm', 'Pitch'), 'Geometry Collision'),
         ):
             result[key] = ParameterSpec(key, choices[0], choices=choices, generators=(generator,), timing='cycle')
+    if supports_strum(block):
+        for key, (default, choices) in STRUM_CHOICES.items():
+            result[key] = ParameterSpec(key, default, choices=choices, timing='step')
     if block.block_type in ('BASS', 'MELODY', 'PAD', 'CHORD'):
         result['scale_name'] = ParameterSpec('scale_name', engine.project.scale, choices=tuple(SCALES), timing='bar')
         result['harmonic_follow'] = ParameterSpec('harmonic_follow', True, boolean=True, timing='bar')
@@ -239,7 +274,8 @@ def curve_range(track, spec):
 
 def parameter_curve(track, spec):
     """Quantize point values in parameter units; time coordinates stay intact."""
-    curve = track.get('curve') or normalize_curve({'points': [[0, .5], [1, .5]]})
+    fallback = [[0, 0], [1, 1]] if track.get('mode') == 'macro' else [[0, .5], [1, .5]]
+    curve = track.get(curve_field(track)) or normalize_curve({'shape': 'linear', 'points': fallback})
     if spec.decimals(effective_operation(track, spec)) != 0:
         return curve
     low, high = curve_range(track, spec)
@@ -258,6 +294,8 @@ def make_track(engine, block, key):
     return {'id': uuid.uuid4().hex, 'entity_id': int(block.id), 'parameter': key,
             'enabled': True, 'operation': 'set', 'mode': 'value', 'value': value,
             'low': spec.low, 'high': spec.high, 'weight': 1., 'timing': 'auto',
+            'macro_source': 'energy', 'reverse': False,
+            'macro_curve': normalize_curve({'shape': 'linear', 'points': [[0, 0], [1, 1]]}),
             'curve': normalize_curve({'shape': 'linear', 'points': [[0, unit], [1, unit]]})}
 
 
@@ -286,7 +324,10 @@ def normalize_tracks(raw):
         tracks.append({'id': identity, 'entity_id': owner, 'parameter': key,
                        'enabled': bool(item.get('enabled', True)),
                        'operation': item.get('operation') if item.get('operation') in OPERATIONS else 'set',
-                       'mode': 'curve' if item.get('mode') == 'curve' else 'value',
+                       'mode': item.get('mode') if item.get('mode') in ('curve', 'macro') else 'value',
+                       'macro_source': item.get('macro_source') if item.get('macro_source') in MACRO_SOURCES else 'energy',
+                       'reverse': bool(item.get('reverse', False)),
+                       'macro_curve': normalize_curve(item.get('macro_curve')) or normalize_curve({'shape': 'linear', 'points': [[0, 0], [1, 1]]}),
                        'value': value, 'low': low, 'high': high,
                        'weight': max(0., min(1., finite(item.get('weight', 1.), 1.))),
                        'timing': item.get('timing') if item.get('timing') in TIMINGS else 'auto',
@@ -297,7 +338,7 @@ def normalize_tracks(raw):
 def timing_for(track, spec, block):
     requested = track.get('timing', 'auto')
     default = spec.timing
-    if default == 'continuous' and block.mode == 'SEQ':
+    if default == 'continuous' and block.mode == 'SEQ' and spec.key not in ARTICULATION_KEYS:
         default = 'step'
     if requested == 'auto':
         return default
@@ -330,6 +371,7 @@ class ParameterAutomationRuntime:
         self.dirty = set()
         self.generation_slot = None
         self.structure_serial = 0
+        self.pruned_generation_targets = set()
 
     def _prune(self, active_ids):
         layers = self.engine.parameter_influence
@@ -340,10 +382,14 @@ class ParameterAutomationRuntime:
                 layers.entries.pop(target, None)
                 layers.specs.pop(target, None)
                 layers.discrete_specs.pop(target, None)
+        generation_targets = {owner for (owner, key), entry in layers.entries.items()
+                              if key not in ARTICULATION_KEYS and any(
+                                  identity.startswith(PREFIX) and identity not in active_ids for identity in entry['rows'])}
         discrete = {owner for (owner, key), entry in layers.entries.items()
-                    if (owner, key) in layers.discrete_specs and any(
+                    if key not in ARTICULATION_KEYS and (owner, key) in layers.discrete_specs and any(
                         identity.startswith(PREFIX) and identity not in active_ids for identity in entry['rows'])}
         changed = layers.prune(owners, PREFIX, active_ids)
+        self.pruned_generation_targets = {block.id for block in changed if block.id in generation_targets}
         for block in changed:
             if block.id in discrete:
                 self.engine.reset_live(block, reset_performance=False)
@@ -355,7 +401,7 @@ class ParameterAutomationRuntime:
         self.context_key = None
         self.states.clear(); self.statuses.clear(); self.spec_cache.clear(); self.dirty.clear()
         self.generation_slot = None
-        if changed and regenerate:
+        if changed and regenerate and self.pruned_generation_targets:
             self.engine.generate()
         return bool(changed)
 
@@ -367,9 +413,11 @@ class ParameterAutomationRuntime:
             return self.reset(regenerate=regenerate)
         section = context['section']
         context_key = (context['cycle'], context['section_id'])
+        output_changed = False
         if context_key != self.context_key:
             restored = self.reset()
-            if restored:
+            output_changed = restored
+            if restored and self.pruned_generation_targets:
                 self.dirty.add(-1)
             self.context_key = context_key
             force = True
@@ -394,8 +442,10 @@ class ParameterAutomationRuntime:
             if cache_key not in self.spec_cache:
                 self.spec_cache[cache_key] = parameter_specs(engine, owner)
             spec = self.spec_cache[cache_key].get(key)
-            if spec is None or not spec.supported(owner):
+            if spec is None or not spec.supported(owner) or (key in ARTICULATION_KEYS and key not in articulation_keys(owner)):
                 status['state'] = 'unavailable for generator'; continue
+            if spec.discrete and track.get('mode') == 'macro':
+                status['state'] = 'macro requires numeric target'; continue
             source_id = f'{PREFIX}{context["section_id"]}:{tid}'
             active_ids.add(source_id)
             if tid not in self.states:
@@ -428,38 +478,59 @@ class ParameterAutomationRuntime:
                 duration = max(1e-9, context['end_beat'] - context['start_beat'])
                 low, high = curve_range(track, spec)
                 curve_key = (signature, low, high, spec.decimals(operation))
-                if track.get('mode') == 'curve' and state.get('curve_key') != curve_key:
+                if track.get('mode') in ('curve', 'macro') and state.get('curve_key') != curve_key:
                     state['curve_key'] = curve_key
                     state['curve'] = parameter_curve(track, spec)
-                operand = (low + (high - low) * curve_value(state['curve'], sampled / duration)
-                           if track.get('mode') == 'curve' else finite(track.get('value'), spec.default))
+                if track.get('mode') == 'macro':
+                    macro = track.get('macro_source', 'energy')
+                    macro = macro if macro in MACRO_SOURCES else 'energy'
+                    if (force or not quantum or state.get('macro_sample') != sampled
+                            or state.get('macro_signature') != signature):
+                        sample_context = {**context, 'local_beat': sampled, 'section_progress': sampled / duration}
+                        macros = runtime.effective_macros(section, engine.director.global_macro_values, sample_context)
+                        state['macro_value'] = max(0., min(1., finite(macros[macro])))
+                        state['macro_sample'], state['macro_signature'] = sampled, signature
+                    source = state['macro_value']
+                    position = 1. - source if track.get('reverse', False) else source
+                    response = curve_value(state['curve'], position)
+                    operand = low + (high - low) * response
+                    status.update(macro_source=macro, macro_value=source, curve_position=position, response=response)
+                else:
+                    operand = (low + (high - low) * curve_value(state['curve'], sampled / duration)
+                               if track.get('mode') == 'curve' else finite(track.get('value'), spec.default))
                 base = finite(engine.parameter_influence.base_value(owner, key, spec.default), spec.default)
                 value = spec.coerce(base + operand if operation == 'add' else base * operand if operation == 'multiply' else operand)
             before = deepcopy(engine.parameter_influence.current_value(owner, key, spec.default))
             row = engine.parameter_influence.entries.get(target, {}).get('rows', {}).get(source_id)
             if row is None or row['value'] != value or row['weight'] != track.get('weight', 1.):
                 engine.parameter_influence.write(owner, key, value,
-                    f'Composition: {section["name"]} / {spec.label}', source_id=source_id, weight=track.get('weight', 1.))
+                    f'Composition: {section["name"]} / {spec.label}' +
+                    (f' ← {status["macro_source"].title()}' if 'macro_source' in status else ''),
+                    source_id=source_id, weight=track.get('weight', 1.))
             current = engine.parameter_influence.current_value(owner, key, spec.default)
-            state['structural'] = spec.discrete
+            state['structural'] = spec.discrete and key not in ARTICULATION_KEYS
             if before != current:
-                self.dirty.add(owner.id)
-                if spec.discrete:
+                if key in ARTICULATION_KEYS:
+                    output_changed = True
+                else:
+                    self.dirty.add(owner.id)
+                if state['structural']:
                     self.structure_serial += 1
                     engine.reset_live(owner, reset_performance=False)
             coefficient = engine.parameter_influence.contributions(owner, key)['Composition']
             status.update(state='active' if coefficient > 1e-9 else 'bypassed by policy',
                           target=value, current=current, contribution=coefficient)
         restored = self._prune(active_ids)
-        self.dirty.update(block.id for block in restored)
+        self.dirty.update(self.pruned_generation_targets)
+        output_changed = output_changed or bool(restored)
         self.states = {key: value for key, value in self.states.items() if key in statuses}
         self.statuses = statuses
         if len(self.spec_cache) > MAX_TRACKS * 2:
             self.spec_cache.clear()
         # One batched generation per sixteenth, not per lane or MIDI-worker tick.
         slot = (context_key, math.floor((context['local_beat'] + 1e-9) / .25))
-        changed = bool(self.dirty)
-        if changed and regenerate and (force or slot != self.generation_slot):
+        changed = bool(self.dirty) or output_changed
+        if self.dirty and regenerate and (force or slot != self.generation_slot):
             engine.generate()
             self.dirty.clear()
             self.generation_slot = slot

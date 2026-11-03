@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Native Windows/Linux folder build and macOS .app bundle."""
 from pathlib import Path
+from PyInstaller.utils.hooks import copy_metadata
 import runpy
 import sys
 
@@ -24,13 +25,13 @@ a = Analysis(
         (str(ROOT / "docs"), "docs"),
         (str(ROOT / "README.md"), "."),
         (str(ROOT / "CHANGELOG.md"), "."),
-    ],
+    ] + sum((copy_metadata(name) for name in ("PySide6", "PySide6_Essentials", "shiboken6", "mido", "python-rtmidi")), []),
     hiddenimports=["mido.backends.rtmidi", "rtmidi", "composition_planner", "composition_planner_ui",
                    "composition_performance", "composition_performance_ui"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtWebEngineCore",
+    excludes=["pytest", "_pytest", "tkinter", "idlelib", "PySide6.QtPdf", "PySide6.QtPdfWidgets", "PySide6.QtWebEngineCore",
               "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineQuick"],
     noarchive=False,
 )

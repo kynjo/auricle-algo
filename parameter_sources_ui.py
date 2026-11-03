@@ -39,9 +39,15 @@ class ParameterSourceLabel(QLabel):
         menu = QMenu(self)
         assign = menu.addAction('Automate in Composition…')
         influences = menu.addAction('Parameter influences…')
+        from section_automation import ARTICULATION_NUMERIC_KEYS
+        macro_actions = {}
+        if self.binding[1] in ARTICULATION_NUMERIC_KEYS:
+            for source in ('energy', 'tension'):
+                macro_actions[menu.addAction(f'Composition: link {source.title()}…')] = source
         chosen = menu.exec(event.globalPos())
         if chosen == assign: host._assign_composition_automation(*self.binding)
         elif chosen == influences: host._open_automation_influences(*self.binding)
+        elif chosen in macro_actions: host._link_articulation_macro(*self.binding, macro_actions[chosen])
         menu.deleteLater()
 
     def set_base_tooltip(self, text):
@@ -164,6 +170,9 @@ def update_parameter_sources(host, *, force=False):
         control = ref() if ref is not None else None
         if feedback is not None and control is not None and isValid(control) and hasattr(control, "set_runtime_value"):
             control.set_runtime_value(feedback.manual, feedback.effective)
+        values = states[label.binding][1]
+        if values is not None and control is not None and isValid(control) and hasattr(control, "set_runtime_choice"):
+            control.set_runtime_choice(*values)
     bar = getattr(host, "global_macro_bar", None)
     if bar is not None:
         for index, key in enumerate(("energy", "tension", "density", "variation")):

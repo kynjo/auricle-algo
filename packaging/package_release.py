@@ -1,4 +1,4 @@
-"""Create Windows ZIP / macOS DMG next to Linux AppImage output."""
+"""Create native Windows ZIP, macOS DMG or Linux tar.gz."""
 from __future__ import annotations
 
 import argparse
@@ -8,15 +8,16 @@ import runpy
 import shutil
 import subprocess
 import tempfile
+import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("target", choices=("windows-x64", "macos-arm64", "macos-x64"))
+    parser.add_argument("target", choices=("windows-x64", "macos-arm64", "macos-x64", "linux-x64"))
     args = parser.parse_args()
-    expected_os = "Windows" if args.target.startswith("windows-") else "Darwin"
+    expected_os = "Windows" if args.target.startswith("windows-") else "Linux" if args.target.startswith("linux-") else "Darwin"
     if platform.system() != expected_os:
         parser.error(f"{args.target} must be packaged on {expected_os}")
     expected_arch = "arm64" if args.target.endswith("arm64") else "x64"
@@ -32,6 +33,12 @@ def main():
         if not (ROOT / "dist/Auricle/Auricle.exe").is_file():
             parser.error("Build dist/Auricle/Auricle.exe first")
         result = shutil.make_archive(str(base), "zip", ROOT / "dist", "Auricle")
+    elif args.target.startswith("linux-"):
+        if not (ROOT / "dist/Auricle/Auricle").is_file():
+            parser.error("Build dist/Auricle/Auricle first")
+        result = str(base) + ".tar.gz"
+        with tarfile.open(result, "w:gz") as archive:
+            archive.add(ROOT / "dist/Auricle", arcname="Auricle")
     else:
         bundle = ROOT / "dist/Auricle.app"
         if not bundle.is_dir():

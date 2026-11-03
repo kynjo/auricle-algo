@@ -74,6 +74,10 @@ class SourceSnapshot:
                 target = (track.get('entity_id'), track.get('parameter'))
                 state = engine.section_automation.statuses.get(track.get('id'), {})
                 detail = f'{section.get("name", "Section")}: parameter automation · {track.get("timing", "auto")} timing'
+                if track.get('mode') == 'macro':
+                    source = 'Tension' if track.get('macro_source') == 'tension' else 'Energy'
+                    detail += f' · {source} → response curve · {track.get("low", 0):g}…{track.get("high", 1):g}'
+                    if track.get('reverse'): detail += ' · reversed input'
                 if not track.get('enabled', True): detail += ' · disabled'
                 if state.get('state') == 'waiting for boundary':
                     detail += f' · waiting for section beat {state["next_beat"]:g}'

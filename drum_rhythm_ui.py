@@ -11,6 +11,50 @@ from help_tooltips import bind_help, bind_attributes, refresh_tree
 from drum_rhythm import (LINK_DESCRIPTIONS, LINK_OPERATIONS, MAP_DEFAULTS, MAP_PRESETS,
                          RHYTHM_ENGINES, enable_musical_kit, integer, rhythm_engine,
                          suggested_links, unit)
+from metric_kit import (METRIC_PARAMETERS, event_probabilities, metric_profile,
+                        metric_settings, metric_weights)
+
+
+class MetricPreview(QWidget):
+    """Small cached probability display; no timer or model writes."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("kitMetricPreview")
+        self.setFixedSize(200, 90)
+        self.setAccessibleName("Metric pulse probabilities before role orchestration")
+        self.setToolTip("Barlow probabilities before role orchestration and syncopation. Lines mark metric groups; bar height shows event probability, not velocity.")
+        self._token, self._values, self._groups = None, (), ()
+
+    def setProfile(self, groups, density, strength):
+        token = (tuple(groups), density, strength)
+        if token == self._token:
+            return
+        self._token, self._groups = token, tuple(groups)
+        self._values = event_probabilities(metric_weights(metric_profile(tuple(groups)), density), strength)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        palette = self.palette()
+        painter.fillRect(self.rect(), palette.color(QPalette.Base))
+        area = QRectF(5, 5, self.width() - 10, self.height() - 24)
+        count = len(self._values)
+        if count:
+            width = area.width() / count
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(palette.color(QPalette.Highlight))
+            for i, probability in enumerate(self._values):
+                height = area.height() * probability
+                painter.drawRect(QRectF(area.left() + i * width + 1,
+                                        area.bottom() - height, max(1., width - 2), height))
+            painter.setPen(QPen(palette.color(QPalette.PlaceholderText), 1, Qt.DotLine))
+            for group in range(1, len(self._groups)):
+                x = area.left() + sum(self._groups[:group]) * width
+                painter.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()))
+        painter.setPen(palette.color(QPalette.Text))
+        painter.drawText(QRectF(0, self.height() - 18, self.width(), 16), Qt.AlignCenter,
+                         "Metric probability · 1/16")
+        painter.end()
 
 
 class RhythmMapPad(QWidget):
@@ -118,7 +162,8 @@ class RhythmMapPad(QWidget):
 
 
 class DrumRhythmPanel(QWidget):
-    def __init__(self, editor, knob_class, spin_class, label_factory, parent=None):
+    def __init__(self, editor, knob_class, spin_class, label_factory, parent=None,
+                 *, range_knob_class=None):
         super().__init__(parent)
         self.editor, self.host, self.drum = editor, editor.host, editor.drum
         self.setObjectName("drumRhythmPanel")
@@ -132,9 +177,8 @@ class DrumRhythmPanel(QWidget):
         for label, key in RHYTHM_ENGINES:
             self.engine_selector.addItem(label, key)
         self.engine_selector.setCurrentIndex(self.engine_selector.findData(rhythm_engine(self.drum)))
-        self.engine_selector.setToolTip("Role grid preserves the original kit. Rhythm map composes all voices from four related groove skeletons.")
-        self.engine_selector.currentIndexChanged.connect(
-            lambda _: editor._set_config("kit_engine", self.engine_selector.currentData()))
+        self.engine_selector.setToolTip("Role grid: classic kit. Rhythm map: groove skeletons. Metric / Barlow: metre-derived probabilities and bounded anticipation.")
+        self.engine_selector.currentIndexChanged.connect(self._engine_changed)
         header.addWidget(self.engine_selector)
         self.motifs = QCheckBox("Motifs"); self.motifs.setObjectName("kitMotifs")
         self.motifs.setChecked(bool(self.drum.parameters.get("kit_motif_enabled", False)))
@@ -166,6 +210,8 @@ class DrumRhythmPanel(QWidget):
         body = QVBoxLayout(self.body); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(3)
         controls = QHBoxLayout(); controls.setSpacing(8)
         self.knobs = []
+        self._map_widgets = []
+        self._metric_widgets = []
         descriptions = {
             "kit_map_x": ("Map X", "Horizontal morph: straight / pocket → broken / offbeat. Core meter anchors remain protected."),
             "kit_map_y": ("Map Y", "Vertical morph: restrained → driving. Density removes decoration before core beats."),
@@ -184,6 +230,8 @@ class DrumRhythmPanel(QWidget):
             title = label_factory(label, knob); title.setObjectName("knobLabel"); title.setAlignment(Qt.AlignCenter)
             column.addWidget(title); column.addWidget(knob, 0, Qt.AlignCenter)
             controls.addWidget(cell); self.knobs.append(knob)
+            if key != "kit_motif_change":
+                self._map_widgets.append(cell)
         map_cell = QWidget(); map_layout = QVBoxLayout(map_cell)
         map_layout.setContentsMargins(2, 0, 2, 0); map_layout.setSpacing(0)
         map_title = QLabel("Groove map"); map_title.setObjectName("knobLabel")
@@ -199,9 +247,37 @@ class DrumRhythmPanel(QWidget):
         map_layout.addWidget(map_title); map_layout.addWidget(self.map_preset); map_layout.addWidget(self.map_pad)
         self._sync_map_preset()
         controls.addWidget(map_cell)
-        explanation = QLabel("One shared groove · ornaments thin before anchors\nMotifs follow kit phrases; Composition adds section cadences.")
-        explanation.setObjectName("muted"); explanation.setWordWrap(True)
-        controls.addWidget(explanation, 1)
+        self._map_widgets.append(map_cell)
+        self.metric_knobs = []
+        metric_labels = {"kit_metric_density": ("Density R", "R · 0–1. Sets weight ranges at each metric stratum. Zero retains a sparse metric skeleton; Master Density zero silences the kit."),
+                         "kit_metric_strength": ("Strength M", "M · 0–1. One follows metric accents; zero distributes the same expected event count uniformly. Accent placement becomes less metric as M falls."),
+                         "kit_metric_fragment": ("Fragment", "1–8 pulses (16ths). Maximum consecutive one-pulse anticipations. Then the run resolves at the next metric group. Syncopation above is the independent probability PS.")}
+        for key, (default, low, high) in METRIC_PARAMETERS.items():
+            label, tooltip = metric_labels[key]
+            value = metric_settings(self.drum)[list(METRIC_PARAMETERS).index(key)]
+            if key == "kit_metric_fragment":
+                if range_knob_class is None:
+                    from auricle_gui import RangeKnob
+                    range_knob_class = RangeKnob
+                knob = range_knob_class(low, high, value, integer=True, default=default)
+            else:
+                knob = knob_class(value, default=default)
+            knob.bind_parameter(self.drum.id, key)
+            knob.setObjectName(key); knob.setAccessibleName("Kit " + label)
+            knob.setFixedWidth(54); knob.setToolTip(tooltip)
+            knob.changed.connect(lambda value, k=key: self.host._set_param(
+                self.drum, k, int(round(value)) if k == "kit_metric_fragment" else float(value)))
+            cell = QWidget(); cell.setFixedWidth(74)
+            column = QVBoxLayout(cell); column.setContentsMargins(0, 0, 0, 0); column.setSpacing(0)
+            title = label_factory(label, knob); title.setObjectName("knobLabel"); title.setAlignment(Qt.AlignCenter)
+            column.addWidget(title); column.addWidget(knob, 0, Qt.AlignCenter)
+            controls.addWidget(cell); self.metric_knobs.append(knob); self._metric_widgets.append(cell)
+        self.metric_preview = MetricPreview()
+        controls.addWidget(self.metric_preview); self._metric_widgets.append(self.metric_preview)
+        self.explanation = QLabel()
+        self.explanation.setObjectName("muted"); self.explanation.setWordWrap(True)
+        self.explanation.setMinimumWidth(120)
+        controls.addWidget(self.explanation, 1)
         body.addLayout(controls)
         toolbar = QHBoxLayout(); toolbar.setSpacing(8)
         self.links_enabled = QCheckBox("Voice links"); self.links_enabled.setObjectName("kitLinksEnabled")
@@ -227,7 +303,24 @@ class DrumRhythmPanel(QWidget):
         self._build_links()
         bind_attributes(self, "kit", {"engine_selector": "kit_engine", "motifs": "kit_motif_enabled", "return_every": "kit_motif_return", "links_enabled": "kit_links_enabled", "map_pad": "kit_map_x", "map_preset": "kit_map_y"})
         refresh_tree(self)
+        self._sync_engine_view()
         self._expand(expanded)
+
+    def _engine_changed(self, _index):
+        self.editor._set_config("kit_engine", self.engine_selector.currentData())
+        self._sync_engine_view()
+        self._expand(self.more.isChecked())
+
+    def _sync_engine_view(self):
+        metric = self.engine_selector.currentData() == "metric"
+        for widget in self._map_widgets:
+            widget.setVisible(not metric)
+        for widget in self._metric_widgets:
+            widget.setVisible(metric)
+        self.activate.setText("Metric kit" if metric else "Musical kit")
+        self.activate.setToolTip("Enable the selected musical engine, motifs and suggested links. Existing MIDI assignments and voice generators are preserved.")
+        self.explanation.setText("R → density · M → metric strength\nSyncopation = PS · Fragment limits anticipation runs."
+                                 if metric else "One shared groove · ornaments thin before anchors\nMotifs follow kit phrases; Composition adds section cadences.")
 
     def _expand(self, expanded):
         expanded = bool(expanded)
@@ -267,6 +360,10 @@ class DrumRhythmPanel(QWidget):
             if not any(block is self.drum for block in self.host.project.blocks):
                 return
             enable_musical_kit(self.drum)
+            if self.engine_selector.currentData() == "metric":
+                self.drum.parameters["kit_engine"] = "metric"
+                for key, (default, _low, _high) in METRIC_PARAMETERS.items():
+                    self.drum.parameters.setdefault(key, default)
             self.host.engine.regenerate(self.drum)
         self.host._mark_dirty()
         self.host._kit_rhythm_expanded[self.drum.id] = True
@@ -471,11 +568,20 @@ class DrumRhythmPanel(QWidget):
 
     def update_state(self, active, plan=None, bar=0):
         mapped = active and rhythm_engine(self.drum) == "map"
+        metric = active and rhythm_engine(self.drum) == "metric"
         self.engine_selector.setEnabled(active)
-        self.motifs.setEnabled(mapped)
-        self.return_every.setEnabled(mapped and self.motifs.isChecked())
+        self.motifs.setEnabled(mapped or metric)
+        self.return_every.setEnabled((mapped or metric) and self.motifs.isChecked())
         for knob in self.knobs:
-            knob.setEnabled(mapped and (knob.objectName() != "kit_motif_change" or self.motifs.isChecked()))
+            knob.setEnabled((mapped or metric) and self.motifs.isChecked()
+                            if knob.objectName() == "kit_motif_change" else mapped)
+        for knob in self.metric_knobs:
+            knob.setEnabled(metric)
+        self.metric_preview.setEnabled(metric)
+        if metric:
+            from coordinated_kit import meter_groups
+            values = self._metric_display_settings()
+            self.metric_preview.setProfile(meter_groups(self.drum), values[0], values[1])
         self.links_enabled.setEnabled(active)
         self.add_link.setEnabled(active and len(self.drum.drum_voices) >= 2 and len(self._raw_links()) < 64)
         self.links_body.setEnabled(active and self.links_enabled.isChecked())
@@ -485,4 +591,14 @@ class DrumRhythmPanel(QWidget):
         self.map_pad.setCoordinates(*self._map_coordinates())
         self._sync_map_preset()
         self.state_label.setText(plan.bar_states[min(bar, len(plan.bar_states) - 1)]
-                                 if mapped and plan and plan.bar_states and self.motifs.isChecked() else "—")
+                                 if (mapped or metric) and plan and plan.bar_states and self.motifs.isChecked() else "—")
+
+    def _metric_display_settings(self):
+        # Honour the same pending edits as the map pad, without writing readback
+        # into the authored parameter base or acquiring the transport model lock.
+        values = dict(self.drum.parameters)
+        lock = getattr(self.host, "_pending_param_edits_lock", None)
+        if lock is not None:
+            with lock:
+                values.update(getattr(self.host, "_pending_param_edits", {}).get(int(self.drum.id), {}))
+        return (unit(values, "kit_metric_density", .45), unit(values, "kit_metric_strength", .85))

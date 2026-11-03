@@ -20,6 +20,11 @@ if [ ! -x "$APPIMAGETOOL" ]; then
   echo "Set APPIMAGETOOL to an executable from https://github.com/AppImage/appimagetool/releases" >&2
   exit 1
 fi
+APPIMAGE_RUNTIME="${APPIMAGE_RUNTIME:-$PWD/build/appimage/runtime-$ARCH}"
+if [ ! -f "$APPIMAGE_RUNTIME" ]; then
+  echo "Run packaging/fetch_appimage_tools.py or set APPIMAGE_RUNTIME" >&2
+  exit 1
+fi
 VERSION="$("${PYTHON:-python3}" -c 'from version import APP_VERSION; print(APP_VERSION)')"
 rm -rf "$APPDIR"
 mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/share/icons/hicolor/512x512/apps" "$APPDIR/usr/share/icons/hicolor/scalable/apps" "$OUT_DIR"
@@ -51,6 +56,7 @@ APPRUN
 chmod +x "$APPDIR/AppRun"
 export APPIMAGE_EXTRACT_AND_RUN=1
 OUT_FILE="$OUT_DIR/Auricle-$VERSION-linux-$ARTIFACT_ARCH.AppImage"
-ARCH="$ARCH" "$APPIMAGETOOL" "$APPDIR" "$OUT_FILE"
+ARCH="$ARCH" "$APPIMAGETOOL" --runtime-file "$APPIMAGE_RUNTIME" \
+  --mksquashfs-opt=-processors --mksquashfs-opt=2 "$APPDIR" "$OUT_FILE"
 chmod +x "$OUT_FILE"
 printf 'Built %s\n' "$OUT_FILE"

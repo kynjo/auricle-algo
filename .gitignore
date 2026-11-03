@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-build/
+build/
+dist/
+out/
+AppDir/
+appimagetool
+.pytest_cache/
+*.log
+.DS_Store
+Thumbs.db
+recovery/
+projects/*.json

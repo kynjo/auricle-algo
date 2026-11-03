@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from PySide6.QtCore import Qt, QTimer, Signal, QRectF
+from PySide6.QtCore import Qt, QTimer, Signal, QRectF, QSignalBlocker
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QBoxLayout, QGridLayout, QLabel, QPushButton,
@@ -12,7 +12,8 @@ from PySide6.QtWidgets import (
 )
 
 from section_automation import (parameter_specs, make_track, operation_range, timing_for,
-                                entities, MAX_TRACKS, curve_range, effective_operation, parameter_curve)
+                                entities, MAX_TRACKS, curve_range, effective_operation, parameter_curve,
+                                curve_field, articulation_family, articulation_keys, MACRO_SOURCES)
 from composition_automation import normalize_curve, curve_value, unit
 from composition_curve_ui import MacroCurveEditor
 from parameter_influence_ui import InfluenceDialog, formatted
@@ -21,6 +22,13 @@ from ui_themes import theme_palette
 
 TIMING_NAMES = {'auto': 'Auto', 'continuous': 'Continuous', 'step': '1/16', 'beat': 'Beat',
                 'bar': 'Bar', 'cycle': 'Source cycle', 'section': 'Section start'}
+FAMILY_NAMES = (('All parameters', 'all'), ('Articulations', 'articulations'),
+                ('Ratchet', 'ratchet'), ('Flam', 'flam'), ('Strum', 'strum'))
+
+
+def matches_family(key, family):
+    return family == 'all' or (articulation_family(key) is not None and
+                               (family == 'articulations' or articulation_family(key) == family))
 
 
 class ParameterCurveEditor(MacroCurveEditor):
@@ -33,6 +41,7 @@ class ParameterCurveEditor(MacroCurveEditor):
         self.integer = False
         self.boolean = False
         self.snap = True
+        self.macro_axis = False
         self.setAccessibleName('Selected parameter automation curve')
         bind_help(self, 'curve', 'automation')
 
@@ -40,7 +49,7 @@ class ParameterCurveEditor(MacroCurveEditor):
         return QRectF(self.rect()).adjusted(49, 8, -12, -20)
 
     def _move(self, position):
-        if self.snap and self.duration > 0:
+        if self.snap and not self.macro_axis and self.duration > 0:
             rect = self.plot_rect()
             x = max(0., min(1., (position.x() - rect.left()) / max(1., rect.width())))
             y = max(0., min(1., (rect.bottom() - position.y()) / max(1., rect.height())))
@@ -95,33 +104,56 @@ class DestinationPicker(QDialog):
         self.resize(460, 460)
         layout = QVBoxLayout(self)
         self.owner = QComboBox()
-        for block in entities(panel.host.project):
-            self.owner.addItem(panel.entity_name(block.id), block.id)
-        if panel.owner_filter.currentData() is not None:
-            self.owner.setCurrentIndex(self.owner.findData(panel.owner_filter.currentData()))
+        self.family = QComboBox()
+        for label, key in FAMILY_NAMES: self.family.addItem(label, key)
+        self.family.setCurrentIndex(self.family.findData(panel.family_filter.currentData()))
         self.search = QLineEdit(); self.search.setPlaceholderText('Find a parameter…')
         self.list = QListWidget()
         self.note = QLabel(''); self.note.setWordWrap(True); self.note.setObjectName('muted')
-        layout.addWidget(self.owner); layout.addWidget(self.search); layout.addWidget(self.list, 1); layout.addWidget(self.note)
+        layout.addWidget(self.family); layout.addWidget(self.owner); layout.addWidget(self.search); layout.addWidget(self.list, 1); layout.addWidget(self.note)
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Ok)
         buttons.button(QDialogButtonBox.Ok).setText('Add / open')
         layout.addWidget(buttons)
         buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject)
         self.list.itemDoubleClicked.connect(lambda _item: self.accept())
         self.owner.currentIndexChanged.connect(self.refresh)
+        self.family.currentIndexChanged.connect(self.populate_owners)
         self.search.textChanged.connect(self.refresh)
         self.list.currentItemChanged.connect(self.describe)
         for widget in (self.owner, self.search, self.list):
             bind_help(widget, 'destination', 'automation')
-        self.refresh(); self.search.setFocus()
+        bind_help(self.family, 'family', 'automation')
+        self.populate_owners(); self.search.setFocus()
+
+    def populate_owners(self):
+        selected = self.owner.currentData()
+        if selected is None: selected = self.panel.owner_filter.currentData()
+        family = self.family.currentData()
+        self.owner.blockSignals(True); self.owner.clear()
+        for block in entities(self.panel.host.project):
+            if family != 'all' and not any(matches_family(key, family) for key in articulation_keys(block)):
+                continue
+            self.owner.addItem(self.panel.entity_name(block.id), block.id)
+        self.owner.setCurrentIndex(max(0, self.owner.findData(selected)))
+        self.owner.blockSignals(False)
+        self.refresh()
 
     def refresh(self):
+        # Clearing a selected list emits intermediate current-item signals.
+        # They must not describe an old key against the newly selected owner.
+        with QSignalBlocker(self.list):
+            self._populate_parameters()
+        self.describe(self.list.currentItem())
+
+    def _populate_parameters(self):
         self.list.clear()
         owner = self.panel.host.get_entity(self.owner.currentData())
         if owner is None:
             return
         query = self.search.text().casefold()
         for key, spec in sorted(parameter_specs(self.panel.host.engine, owner).items(), key=lambda pair: pair[1].label.casefold()):
+            if not matches_family(key, self.family.currentData()): continue
+            if self.family.currentData() != 'all' and key not in articulation_keys(owner): continue
             suffix = ' · ' + '/'.join(spec.generators) if spec.generators else ''
             label = spec.label + suffix
             if query not in (label + ' ' + key).casefold():
@@ -137,7 +169,9 @@ class DestinationPicker(QDialog):
         if item is None:
             self.note.setText('No matching parameters.'); return
         owner = self.panel.host.get_entity(self.owner.currentData())
-        spec = parameter_specs(self.panel.host.engine, owner)[item.data(Qt.UserRole)]
+        spec = parameter_specs(self.panel.host.engine, owner).get(item.data(Qt.UserRole)) if owner is not None else None
+        if spec is None:
+            self.note.setText('No matching parameters.'); return
         text = ('Choice/text snapshot; applied at a musical boundary.' if spec.discrete else
                 f'Range {spec.low:g}…{spec.high:g}' + (f' {spec.unit}' if spec.unit else '') +
                 (' · integer.' if spec.integer or spec.boolean else ' · decimal.'))
@@ -163,9 +197,12 @@ class SectionAutomationPanel(QWidget):
         root = QVBoxLayout(self); root.setContentsMargins(6, 6, 6, 6); root.setSpacing(5)
         top = QHBoxLayout(); top.setSpacing(5)
         self.owner_filter = QComboBox(); self.owner_filter.setMinimumWidth(120); self.owner_filter.setMaximumWidth(260)
+        self.family_filter = QComboBox(); self.family_filter.setObjectName('automationFamily')
+        self.family_filter.setMaximumWidth(145); self.family_filter.setMinimumWidth(0)
+        for label, key in FAMILY_NAMES: self.family_filter.addItem(label, key)
         self.search = QLineEdit(); self.search.setPlaceholderText('Filter assigned parameters…')
         self.add_button = QPushButton('+ Parameter'); self.remove_button = QPushButton('Remove')
-        top.addWidget(self.owner_filter); top.addWidget(self.search, 1); top.addWidget(self.add_button); top.addWidget(self.remove_button)
+        top.addWidget(self.owner_filter); top.addWidget(self.family_filter); top.addWidget(self.search, 1); top.addWidget(self.add_button); top.addWidget(self.remove_button)
         root.addLayout(top)
         self.heading = QLabel(); self.heading.setObjectName('muted'); self.heading.setWordWrap(True)
         root.addWidget(self.heading)
@@ -191,7 +228,7 @@ class SectionAutomationPanel(QWidget):
         self.destination = QLabel(); self.destination.setWordWrap(True); self.destination.setTextInteractionFlags(Qt.TextSelectableByMouse)
         detail.addWidget(self.destination)
         grid = QGridLayout(); grid.setContentsMargins(0, 0, 0, 0); grid.setSpacing(5)
-        self.mode = QComboBox(); self.mode.addItem('Value', 'value'); self.mode.addItem('Curve', 'curve')
+        self.mode = QComboBox(); self.mode.addItem('Value', 'value'); self.mode.addItem('Section curve', 'curve'); self.mode.addItem('Macro response', 'macro')
         self.operation = QComboBox()
         for text, value in [('Set value', 'set'), ('Add to manual', 'add'), ('Multiply manual', 'multiply')]:
             self.operation.addItem(text, value)
@@ -219,6 +256,15 @@ class SectionAutomationPanel(QWidget):
         second.addStretch(1)
         second.addWidget(self.shape); second.addWidget(self.influence_button)
         detail.addLayout(second)
+        self.macro_box = QWidget()
+        macro_row = QHBoxLayout(self.macro_box); macro_row.setContentsMargins(0, 0, 0, 0); macro_row.setSpacing(5)
+        macro_row.addWidget(QLabel('Source'))
+        self.macro_source = QComboBox(); self.macro_source.setObjectName('automationMacroSource')
+        for source in MACRO_SOURCES: self.macro_source.addItem(source.title(), source)
+        self.macro_source.setMaximumWidth(140)
+        self.reverse = QCheckBox('Reverse input'); self.reverse.setObjectName('automationMacroReverse')
+        macro_row.addWidget(self.macro_source); macro_row.addWidget(self.reverse); macro_row.addStretch(1)
+        second.insertWidget(2, self.macro_box)
         self.curve_box = QWidget(); curve_layout = QVBoxLayout(self.curve_box)
         curve_layout.setContentsMargins(0, 0, 0, 0); curve_layout.setSpacing(3)
         ranges = QHBoxLayout(); ranges.setSpacing(5)
@@ -236,7 +282,8 @@ class SectionAutomationPanel(QWidget):
         self.point_beat = QDoubleSpinBox(); self.point_beat.setDecimals(4); self.point_beat.setSingleStep(.25)
         self.point_value = QDoubleSpinBox(); self.point_value.setDecimals(5)
         self.snap = QCheckBox('Snap 1/16'); self.snap.setChecked(True)
-        points.addWidget(QLabel('Point beat')); points.addWidget(self.point_beat, 1)
+        self.point_x_label = QLabel('Point beat')
+        points.addWidget(self.point_x_label); points.addWidget(self.point_beat, 1)
         points.addWidget(QLabel('Value')); points.addWidget(self.point_value, 1); points.addWidget(self.snap)
         curve_layout.addLayout(points); detail.addWidget(self.curve_box)
         self.timing_note = QLabel(); self.timing_note.setObjectName('muted'); self.timing_note.setWordWrap(True)
@@ -247,12 +294,15 @@ class SectionAutomationPanel(QWidget):
         self.commit_timer = QTimer(self); self.commit_timer.setSingleShot(True); self.commit_timer.setInterval(35)
         self.commit_timer.timeout.connect(self.flush)
         self.owner_filter.currentIndexChanged.connect(lambda _index: self.sync())
+        self.family_filter.currentIndexChanged.connect(lambda _index: self.sync())
         self.search.textChanged.connect(lambda _text: self.sync())
         self.add_button.clicked.connect(self.pick_destination)
         self.remove_button.clicked.connect(self.remove_selected)
         self.table.itemSelectionChanged.connect(self._select)
         self.table.itemChanged.connect(self._toggle)
         self.mode.currentIndexChanged.connect(lambda _i: self._field('mode', self.mode.currentData()))
+        self.macro_source.currentIndexChanged.connect(lambda _i: self._field('macro_source', self.macro_source.currentData()))
+        self.reverse.toggled.connect(lambda value: self._field('reverse', value))
         self.operation.currentIndexChanged.connect(self._operation_changed)
         self.timing.currentIndexChanged.connect(lambda _i: self._field('timing', self.timing.currentData()))
         self.weight.valueChanged.connect(lambda value: self._field('weight', value))
@@ -275,6 +325,7 @@ class SectionAutomationPanel(QWidget):
                     (self.shape, 'curve'), (self.low, 'range'), (self.high, 'range'),
                     (self.point_beat, 'point'), (self.point_value, 'point'), (self.snap, 'point'),
                     (self.full_range, 'full_range'),
+                    (self.family_filter, 'family'), (self.macro_source, 'macro_source'), (self.reverse, 'reverse'),
                     (self.influence_button, 'influences'), (self.ramp, 'ramp'), (self.flat, 'ramp')]
         for widget, key in bindings: bind_help(widget, key, 'automation')
         self.sync()
@@ -334,6 +385,7 @@ class SectionAutomationPanel(QWidget):
         for track in tracks:
             owner, spec = self._spec(track)
             title = spec.label if spec else track['parameter']
+            if not matches_family(track['parameter'], self.family_filter.currentData()): continue
             if self.owner_filter.currentData() is not None and track['entity_id'] != self.owner_filter.currentData(): continue
             if self.search.text().casefold() not in (title + ' ' + self.entity_name(track['entity_id']) + ' ' + track['parameter']).casefold(): continue
             visible.append((track, title))
@@ -348,7 +400,7 @@ class SectionAutomationPanel(QWidget):
                     check.setCheckState(Qt.Checked if track['enabled'] else Qt.Unchecked)
                     check.setData(Qt.UserRole, track['id']); self.table.setItem(row, 0, check)
                     for column, text in enumerate((self.entity_name(track['entity_id']), title,
-                                                   f'{track["operation"]} · {track["mode"]}', 'Ready'), 1):
+                                                   f'{track["operation"]} · ' + (track.get('macro_source', 'energy').title() if track['mode'] == 'macro' else track['mode']), 'Ready'), 1):
                         item = QTableWidgetItem(text); item.setData(Qt.UserRole, track['id']); self.table.setItem(row, column, item)
                     if track['id'] == self._selected_id: selected_row = row
                 if selected_row < 0 and visible: selected_row = 0
@@ -394,6 +446,11 @@ class SectionAutomationPanel(QWidget):
             for combo, value in ((self.mode, track['mode']), (self.operation, operation), (self.timing, track['timing'])):
                 combo.setCurrentIndex(max(0, combo.findData(value)))
             self.weight.setValue(track['weight'])
+            macro = track['mode'] == 'macro' and not spec.discrete
+            graph = track['mode'] in ('curve', 'macro') and not spec.discrete
+            self.macro_source.setCurrentIndex(max(0, self.macro_source.findData(track.get('macro_source', 'energy'))))
+            self.reverse.setChecked(bool(track.get('reverse', False)))
+            self.macro_box.setVisible(macro)
             self.mode.setEnabled(not spec.discrete); self.operation.setEnabled(not spec.discrete and not spec.boolean)
             for index in range(self.timing.count()):
                 timing = self.timing.itemData(index)
@@ -416,8 +473,8 @@ class SectionAutomationPanel(QWidget):
             self.value_stack.setCurrentWidget(self.choice if spec.choices else self.text if spec.text else self.value)
             self.value_stack.setVisible(track['mode'] == 'value' or spec.discrete)
             self.value_label.setVisible(track['mode'] == 'value' or spec.discrete)
-            self.curve_box.setVisible(track['mode'] == 'curve' and not spec.discrete)
-            self.shape.setVisible(track['mode'] == 'curve' and not spec.discrete)
+            self.curve_box.setVisible(graph)
+            self.shape.setVisible(graph)
             for spin in (self.low, self.high): spin.setRange(low, high)
             fitted_low, fitted_high = curve_range(track, spec)
             self.low.setValue(fitted_low); self.high.setValue(fitted_high)
@@ -426,14 +483,23 @@ class SectionAutomationPanel(QWidget):
             self.curve.low, self.curve.high = fitted_low, fitted_high
             self.curve.integer = decimals == 0
             self.curve.boolean = spec.boolean
-            self.curve.duration = self.planner._selected_section()['bars'] * self.planner.runtime.bar_beats()
+            self.curve.macro_axis = macro
+            self.curve.duration = 100. if macro else self.planner._selected_section()['bars'] * self.planner.runtime.bar_beats()
+            self.curve.axis_labels = ('INPUT 0%', 'INPUT 100%') if macro else ('START', 'END')
+            self.point_x_label.setText('Input %' if macro else 'Point beat')
+            self.point_beat.setSuffix(' %' if macro else '')
+            self.point_beat.setSingleStep(1. if macro else .25)
+            self.snap.setVisible(not macro)
             self.curve.set_curve(parameter_curve(track, spec))
-            self.shape.setCurrentIndex(self.shape.findData(track['curve']['shape']))
+            self.shape.setCurrentIndex(self.shape.findData(track.get(curve_field(track), {'shape': 'linear'})['shape']))
             actual_timing = timing_for(track, spec, owner)
-            note = 'Continuous follows musical time. SEQ material refreshes once per 1/16; LIVE reads the resolved value.' if actual_timing == 'continuous' else \
+            articulation = articulation_family(track['parameter']) is not None
+            note = ('New events read resolved values; source phase is preserved.' if articulation else
+                    'Continuous follows musical time. SEQ material refreshes once per 1/16; LIVE reads the resolved value.') if actual_timing == 'continuous' else \
                    'Held between musical boundaries. Live edits wait for the next boundary; section entry and seek reconstruct the destination value.'
             self.timing_note.setText('Apply: ' + TIMING_NAMES[actual_timing] + '. ' + note +
-                                     (' Choices/text use source priority; Set only.' if spec.discrete else ''))
+                                     (' Choices/text use source priority; Set only.' if spec.discrete else '') +
+                                     (' Input = section macro after curves/Blend; Reverse applies before response.' if macro else ''))
             self._details_signature = signature
             self._loaded_spec = spec
         finally:
@@ -470,12 +536,13 @@ class SectionAutomationPanel(QWidget):
         track['operation'] = operation
         track['low'], track['high'] = operation_range(spec, operation)
         track['value'] = 0. if operation == 'add' else 1. if operation == 'multiply' else spec.coerce(self.host.engine.parameter_influence.base_value(owner, spec.key, spec.default))
-        track['curve'] = normalize_curve({'shape': track['curve']['shape'], 'points': [[0, 0], [1, 1]]})
+        field = curve_field(track)
+        track[field] = normalize_curve({'shape': track.get(field, {}).get('shape', 'linear'), 'points': [[0, 0], [1, 1]]})
         self._changed(); self.sync()
 
     def _shape_changed(self, _index):
         if self._syncing or self.track() is None: return
-        curve = deepcopy(self.track()['curve']); curve['shape'] = self.shape.currentData()
+        curve = deepcopy(self.track()[curve_field(self.track())]); curve['shape'] = self.shape.currentData()
         self._curve_changed(curve)
 
     def _range_changed(self):
@@ -501,23 +568,25 @@ class SectionAutomationPanel(QWidget):
     def _curve_changed(self, curve):
         if self._syncing or self.track() is None: return
         self._adopt_range()
-        self.track()['curve'] = normalize_curve(curve)
+        field = curve_field(self.track())
+        self.track()[field] = normalize_curve(curve)
         _owner, spec = self._spec(self.track())
-        if spec is not None: self.track()['curve'] = parameter_curve(self.track(), spec)
-        self._changed(); self.curve.curve = deepcopy(self.track()['curve']); self.curve.update(); self._point_fields()
+        if spec is not None: self.track()[field] = parameter_curve(self.track(), spec)
+        self._changed(); self.curve.curve = deepcopy(self.track()[field]); self.curve.update(); self._point_fields()
 
     def _point_fields(self):
         track = self.track()
         if track is None: return
-        index = min(self.curve.selected, len(track['curve']['points']) - 1)
+        curve = track[curve_field(track)]
+        index = min(self.curve.selected, len(curve['points']) - 1)
         _owner, spec = self._spec(track)
         low, high = curve_range(track, spec) if spec else (track['low'], track['high'])
-        x, y = parameter_curve(track, spec)['points'][index] if spec else track['curve']['points'][index]
+        x, y = parameter_curve(track, spec)['points'][index] if spec else curve['points'][index]
         self._syncing = True
         try:
             self.point_beat.setRange(0., self.curve.duration)
             self.point_beat.setValue(x * self.curve.duration)
-            self.point_beat.setEnabled(index not in (0, len(track['curve']['points']) - 1))
+            self.point_beat.setEnabled(index not in (0, len(curve['points']) - 1))
             self.point_value.setRange(low, high)
             self.point_value.setValue(low + y * (high - low))
         finally: self._syncing = False
@@ -525,13 +594,13 @@ class SectionAutomationPanel(QWidget):
     def _point_edited(self, _value):
         if self._syncing or self.track() is None: return
         self._adopt_range()
-        track = self.track(); points = deepcopy(track['curve']['points']); index = self.curve.selected
+        track = self.track(); field = curve_field(track); points = deepcopy(track[field]['points']); index = self.curve.selected
         x = self.point_beat.value() / max(1e-9, self.curve.duration)
         if index in (0, len(points) - 1): x = points[index][0]
         else: x = max(points[index - 1][0] + .001, min(points[index + 1][0] - .001, x))
         y = (self.point_value.value() - track['low']) / max(1e-9, track['high'] - track['low'])
         points[index] = [x, y]
-        self._curve_changed({**track['curve'], 'points': points})
+        self._curve_changed({**track[field], 'points': points})
 
     def _preset_curve(self, flat):
         track = self.track()
@@ -541,23 +610,36 @@ class SectionAutomationPanel(QWidget):
             y = (self.point_value.value() - track['low']) / max(1e-9, track['high'] - track['low'])
             points = [[0, y], [1, y]]
         else: points = [[0, 0], [1, 1]]
-        self._curve_changed({**track['curve'], 'points': points}); self.curve.set_curve(self.track()['curve'])
+        field = curve_field(track)
+        self._curve_changed({**track[field], 'points': points}); self.curve.set_curve(self.track()[field])
 
     def pick_destination(self):
         picker = DestinationPicker(self)
         if picker.exec() == QDialog.Accepted and picker.destination(): self.assign(*picker.destination())
         picker.deleteLater()
 
-    def assign(self, entity_id, key):
+    def assign(self, entity_id, key, macro_source=None):
         owner = self.host.get_entity(entity_id)
         if owner is None or key not in parameter_specs(self.host.engine, owner): return False
+        spec = parameter_specs(self.host.engine, owner)[key]
+        if macro_source in MACRO_SOURCES and spec.discrete: return False
+        changed = False
         section = self.planner._selected_section(); tracks = section.setdefault('parameter_automation', [])
         track = next((track for track in tracks if track['entity_id'] == entity_id and track['parameter'] == key), None)
         if track is None:
             if len(tracks) >= MAX_TRACKS:
                 self.host.set_message('This section already has 128 automation lanes'); return False
             track = make_track(self.host.engine, owner, key); tracks.append(track)
+            changed = True
+        if macro_source in MACRO_SOURCES:
+            track.update(mode='macro', macro_source=macro_source)
+            changed = True
+        if changed:
             self._changed(); self.flush()
+        self.family_filter.blockSignals(True)
+        family = self.family_filter.currentData()
+        if not matches_family(key, family): self.family_filter.setCurrentIndex(0)
+        self.family_filter.blockSignals(False)
         self.owner_filter.blockSignals(True); self.owner_filter.setCurrentIndex(0); self.owner_filter.blockSignals(False)
         self.search.blockSignals(True); self.search.clear(); self.search.blockSignals(False)
         self.sync(track['id'])
@@ -613,16 +695,20 @@ class SectionAutomationPanel(QWidget):
             if track is not None and trace is not None:
                 status = statuses.get(track['id'], {}) if same_section else {}
                 text = f'Manual {formatted(trace["base"])}   →   Effective {formatted(trace["current"])}'
+                if 'macro_value' in status:
+                    text += f'   ·   {status["macro_source"].title()} {status["macro_value"]:.0%} → input {status["curve_position"]:.0%}'
                 if 'target' in status: text += f'   ·   Automation target {formatted(status["target"])}'
                 text += '   ·   ' + status.get('state', 'ready / stopped' if not active else 'another section')
                 if self.live.text() != text: self.live.setText(text)
                 self.curve.theme = theme_palette(self.host.theme_combo.currentText())
-                held = curve_value(parameter_curve(track, spec), status.get('sample_beat', 0.) / max(1e-9, self.curve.duration))
+                position = status.get('curve_position', 0.) if track.get('mode') == 'macro' else status.get('sample_beat', 0.) / max(1e-9, self.curve.duration)
+                held = curve_value(parameter_curve(track, spec), position)
                 if spec.decimals(effective_operation(track, spec)) == 0:
                     low, high = curve_range(track, spec)
                     operand = low + held * (high - low)
                     operand = int(operand >= .5) if spec.boolean else round(operand)
                     held = (operand - low) / (high - low) if high != low else .5
-                self.curve.set_position(context['section_progress'] if same_section else None, held if same_section else None)
+                marker = position if track.get('mode') == 'macro' else context['section_progress'] if same_section else None
+                self.curve.set_position(marker if same_section else None, held if same_section else None)
         finally:
             self.table.blockSignals(False); self._syncing = False

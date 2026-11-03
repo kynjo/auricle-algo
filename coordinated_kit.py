@@ -5,6 +5,7 @@ import re
 
 from auricle_drum import kit_random, kit_value
 from musical_clock import MusicalGrid
+from metric_kit import compose_metric, metric_settings
 from drum_rhythm import (MAP_DEFAULTS, RhythmContext, apply_voice_links, compose_map,
                          integer, motif_states, normalized_links, resolve_exclusions,
                          rhythm_engine, unit)
@@ -137,7 +138,7 @@ class KitCoordinator:
         self.plans = {}
 
     def plan(self, drum, seed, beat, context=None):
-        context = (context or RhythmContext()) if rhythm_engine(drum) == "map" else RhythmContext()
+        context = (context or RhythmContext()) if rhythm_engine(drum) in ("map", "metric") else RhythmContext()
         groups = meter_groups(drum)
         steps = sum(groups)
         length = phrase_bars(drum) * steps
@@ -153,7 +154,8 @@ class KitCoordinator:
         musical = (engine, tuple(unit(drum.parameters, key, default) for key, default in MAP_DEFAULTS.items()),
                    bool(drum.parameters.get("kit_motif_enabled", False)),
                    integer(drum.parameters.get("kit_motif_return", 4), 4, 2, 16),
-                   bool(drum.parameters.get("kit_links_enabled", False)), normalized_links(drum), context)
+                   bool(drum.parameters.get("kit_links_enabled", False)), normalized_links(drum), context,
+                   metric_settings(drum) if engine == "metric" else ())
         token = (int(seed), int(drum.id), cycle, length, groups, style, kit_value(drum, "kit_fill"), roster, tuning, variant, musical)
         previous = self.plans.get(drum.id)
         if previous is not None and previous.token == token:
@@ -166,9 +168,9 @@ class KitCoordinator:
         states = motif_states(drum.parameters, shared_seed, start, steps, phrase_bars(drum), context)
         tail = groups[-1]
         fill_ends = {length}
-        if engine == "map" and drum.parameters.get("kit_motif_enabled", False):
+        if engine in ("map", "metric") and drum.parameters.get("kit_motif_enabled", False):
             fill_ends.update((bar + 1) * steps for bar, state in enumerate(states) if state == "Fill")
-        if engine == "map" and context.end_slot is not None:
+        if engine in ("map", "metric") and context.end_slot is not None:
             local_end = context.end_slot - start
             if 0 < local_end <= length:
                 fill_ends.add(local_end)
@@ -280,6 +282,8 @@ class KitCoordinator:
 
         if engine == "map":
             compose_map(drum, shared_seed, start, steps, groups, owners, rows, KitStep, states)
+        elif engine == "metric":
+            compose_metric(drum, shared_seed, start, steps, groups, owners, rows, KitStep, states)
 
         for pos in sorted(fill_slots):
             backbeat = [vid for vid in owners["snare"] + owners["clap"] if rows[vid][pos].anchor]

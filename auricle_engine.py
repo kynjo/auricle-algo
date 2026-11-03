@@ -27,6 +27,9 @@ from musical_events import MusicalEvent
 from motif_development import MotifDevelopment
 from coordinated_kit import KitCoordinator, coordinated, STEP_BEATS, CREATIVE_DEFAULTS
 from drum_rhythm import MAP_DEFAULTS, RhythmContext, retained
+from metric_kit import METRIC_PARAMETERS
+from drum_articulation import ARTICULATION_PARAMETERS, supports_articulation
+from strum import STRUM_PARAMETERS, supports_strum
 from motif_development import digest
 from pattern_chance import chance_at
 from rhythm_intelligence import (
@@ -1139,7 +1142,7 @@ class MusicEngine:
             event_class, _importance = self.event_class_info(block, index * STEP_BEATS, index)
             keep = retained(
                 decision, density, kit_random(seed, index, 0),
-                plan is not None and plan.engine == "map",
+                plan is not None and plan.engine in ("map", "metric"),
                 variation=self._event_variation_value(block, index * STEP_BEATS),
                 event_class=event_class,
             )
@@ -1905,9 +1908,14 @@ class MusicEngine:
         if block.block_type in ("BASS", "MELODY"):
             catalog["harmonic_strength"] = (.75, 0., 1.)
         catalog.update(GENERATOR_MOD_PARAMETERS.get(block.algorithm, {}))
+        if supports_articulation(block):
+            catalog.update(ARTICULATION_PARAMETERS)
+        if supports_strum(block):
+            catalog.update(STRUM_PARAMETERS)
         if getattr(block, "drum_voices", None) is not None:
             catalog.update({key: (value, 0., 1.) for key, value in CREATIVE_DEFAULTS.items()})
             catalog.update({key: (value, 0., 1.) for key, value in MAP_DEFAULTS.items()})
+            catalog.update(METRIC_PARAMETERS)
             catalog.update({key: (default, 0., 1.) for key, default in (("kit_density", 1.), ("kit_swing", 0.), ("kit_humanize", 0.), ("kit_fill", 0.))})
         # Any numeric parameter already stored in a project is a real
         # destination too; use a conservative range around its value.
@@ -1930,14 +1938,16 @@ class MusicEngine:
         default, lo, hi = catalog[key]
         value = _clamp(float(value), lo, hi)
         current = self.parameter_influence.base_value(block, key, default)
+        integer_control = (key in ("kit_metric_fragment", "drum_ratchet_count") or
+                           isinstance(current, int) and not isinstance(current, bool) and key not in FLOAT_MOD_KEYS)
         self.parameter_influence.configure(block, key, default, lo, hi,
-            integer=isinstance(current, int) and not isinstance(current, bool) and key not in FLOAT_MOD_KEYS,
+            integer=integer_control,
             boolean=isinstance(current, bool))
         if isinstance(current, bool):
             value = bool(value >= 0.5)
         elif key in FLOAT_MOD_KEYS:
             value = float(value)
-        elif isinstance(current, int):
+        elif integer_control:
             value = int(round(value))
         else:
             value = float(value)

@@ -23,6 +23,7 @@ class MacroCurveEditor(QWidget):
         self.dragging = False
         self.position = None
         self.current_value = None
+        self.axis_labels = ("START", "END")
         self.setMinimumWidth(140)
         self.setFixedHeight(104)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
@@ -166,6 +167,6 @@ class MacroCurveEditor(QWidget):
             p.setBrush(QColor(theme.text))
             p.drawEllipse(self.point_position((x, self.current_value if self.current_value is not None else curve_value(self.curve, x))), 3, 3)
         p.setPen(QColor(theme.muted))
-        p.drawText(QRectF(r.left(), r.bottom() + 3, r.width(), 14), Qt.AlignLeft, "START")
-        p.drawText(QRectF(r.left(), r.bottom() + 3, r.width(), 14), Qt.AlignRight, "END")
+        p.drawText(QRectF(r.left(), r.bottom() + 3, r.width(), 14), Qt.AlignLeft, self.axis_labels[0])
+        p.drawText(QRectF(r.left(), r.bottom() + 3, r.width(), 14), Qt.AlignRight, self.axis_labels[1])
         p.end()

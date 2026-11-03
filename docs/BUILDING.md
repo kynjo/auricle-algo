@@ -1,104 +1,32 @@
-# Сборка Auricle v2.0
+# Сборка Auricle
 
+## Состав
 
-Единый источник логотипа — `assets/auricle_logo.svg`. Интерфейс и значки окон используют QSvgRenderer. Перед сборкой Auricle.spec автоматически обновляет `auricle.ico`, `auricle.icns` и PNG 512 px из этого SVG; исходный вектор сохраняется без изменений. ICO содержит размеры 16–256 px, ICNS — обычные и Retina-варианты до 1024 px.
-Рекомендуемая среда: Python 3.12, 64 бита. Каждая нативная сборка выполняется на целевой ОС и архитектуре; PyInstaller не является кросс-компилятором. Windows ARM и универсальный macOS universal2 этим workflow не собираются.
+Python 3.12, PySide6 6.12.0, Mido 1.3.3, python-rtmidi 1.5.8; PyInstaller 6.22.3. Версии заданы в `requirements.txt` и `requirements-build.txt`. Нативные пакеты собираются на соответствующей ОС, без кросс-компиляции.
 
-## Windows
+| Цель | GitHub runner | Результат |
+| --- | --- | --- |
+| Windows x64 | windows-2022 | portable ZIP с EXE |
+| Linux x64 | ubuntu-22.04 | AppImage и tar.gz |
+| macOS ARM64 | macos-15 | DMG с Auricle.app |
+| macOS x64 | macos-15-intel | DMG с Auricle.app |
 
-Установите Python 3.12 x64 с Python Launcher. В каталоге проекта:
+## Локальная сборка
 
-```bat
-setup_windows.bat
-build_windows.bat
-```
+- Windows: `build_windows.bat`. Скрипт сам создаёт `.venv-build` через Python Launcher 3.12.
+- Linux/macOS: `bash build.sh`. Переменная `PYTHON` может выбрать интерпретатор для создания окружения.
+- Linux AppImage: `bash build_appimage.sh`; appimagetool 1.9.1 и runtime 20251108 загружаются автоматически с проверкой закреплённых SHA256. То же выполняется в GitHub Actions.
 
-Результат: `dist\Auricle\Auricle.exe` и `out\Auricle-v2.0-windows-x64.zip`. Переносите весь каталог Auricle вместе с `_internal`, а не один EXE. Иконка исполняемого файла берётся из `assets/auricle.ico`.
+Результаты PyInstaller находятся в `dist/`, архивы — в `out/`. `packaging/smoke_native.py` запускает собранное приложение из временного каталога с offscreen Qt и проверяет код завершения. Пустое окно без artwork не считается успешным запуском.
 
-## Linux
+На Linux до сборки нужны библиотеки ALSA, OpenGL/EGL, DBus, fontconfig и XCB. Полный список установки сохранён в workflow; наличие их при сборке позволяет PyInstaller собрать соответствующие зависимости Qt. AppImage не устраняет ограничения glibc: runner Ubuntu 22.04 выбран как базовая Linux-система.
 
-Эталон сборки GitHub Actions — Ubuntu 22.04 x64. Установите системные зависимости:
+## Ресурсы
 
-```sh
-sudo apt-get update
-sudo apt-get install -y python3-venv libasound2-dev libgl1 libegl1 libdbus-1-3 libfontconfig1 \
-  libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-  libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xkb1
-bash build.sh
-```
+`Auricle.spec` включает runtime-модули, SVG/PNG/ICO/ICNS, текущие руководства, примеры и metadata зависимостей. Системные иконки повторно формируются через QSvgRenderer из `assets/auricle_logo.svg`. Пути работают при запуске из произвольного каталога.
 
-На других дистрибутивах названия пакетов могут отличаться. Не следует собирать на системе с более новой glibc, чем у целевых пользователей.
+`python -m build` создаёт wheel и sdist. `python packaging/source_archive.py` создаёт полный чистый ZIP, включая `.github/workflows`. Тесты и служебные каталоги исключены из обоих форматов.
 
-Результат: `dist/Auricle/Auricle` и соседние файлы. Для AppImage потребуется [appimagetool](https://github.com/AppImage/appimagetool/releases), соответствующий архитектуре. В GitHub Actions используется версия 1.9.1; для локальной сборки скачайте её в `appimagetool`, затем:
+## Подпись
 
-```sh
-chmod +x appimagetool
-APPIMAGETOOL="$PWD/appimagetool" bash build_appimage.sh
-```
-
-Если PyInstaller уже отработал, достаточно `APPIMAGETOOL="$PWD/appimagetool" bash packaging/make_appimage.sh`. Иконка создаётся из `assets/auricle_logo.svg` через QSvgRenderer; ImageMagick не требуется. AppImage содержит PNG 512 px и масштабируемый SVG в hicolor. Результат: `out/Auricle-v2.0-linux-x64.AppImage`. При упаковке без FUSE скрипт включает `APPIMAGE_EXTRACT_AND_RUN=1` для appimagetool.
-
-## macOS
-
-Установите Python 3.12 подходящей архитектуры и выполните:
-
-```sh
-bash build.sh
-.venv-build/bin/python packaging/package_release.py macos-arm64
-```
-
-На Intel используйте `macos-x64`. Результат: `dist/Auricle.app` и соответствующий DMG в `out/`. Иконка берётся из `assets/auricle.icns`. Архитектура Python и компьютера должна соответствовать выбранной цели. Автоматическая Developer ID подпись и notarization не настроены.
-
-## Python wheel и sdist
-
-В активированном окружении:
-
-```sh
-python -m pip install -r requirements-build.txt
-python -m build
-```
-
-Получатся `dist/auricle-2.0.0-py3-none-any.whl` и `dist/auricle-2.0.0.tar.gz`. Wheel содержит все рабочие модули и artwork-пакет `auricle_assets`; исходный архив также содержит тесты, примеры, документацию и сценарии сборки.
-
-После установки wheel команда `auricle` работает из любого каталога. В `version.py` используются два представления одной версии: `APP_VERSION = "v2.0"` для приложения и GitHub, `PACKAGE_VERSION = "2.0.0"` для Python и macOS.
-
-## Проверки
-
-```sh
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-python auricle_gui.py --smoke-test
-```
-
-На Linux без дисплея установите `QT_QPA_PLATFORM=offscreen`. Smoke test проверяет наличие artwork, создаёт окно, проверяет загрузку логотипа и закрывает приложение. Использует временный каталог восстановления и не запускает MIDI-воспроизведение.
-
-Проверка нативной сборки:
-
-```sh
-QT_QPA_PLATFORM=offscreen dist/Auricle/Auricle --smoke-test
-# macOS:
-dist/Auricle.app/Contents/MacOS/Auricle --smoke-test
-```
-
-Windows PowerShell:
-
-```powershell
-$p = Start-Process dist/Auricle/Auricle.exe -ArgumentList '--smoke-test' -Wait -PassThru
-if ($p.ExitCode -ne 0) { throw 'Auricle smoke test failed' }
-```
-
-Smoke test проверяет запуск, но не заменяет прослушивание и проверку MIDI-порта на настоящем оборудовании.
-
-## Ресурсы и примеры в готовых приложениях
-
-- Windows / Linux folder build: `dist/Auricle/_internal/examples/`, рядом `docs/` и `assets/`.
-- macOS: `Auricle.app/Contents/Resources/examples/` (в Finder: Show Package Contents).
-- AppImage: при необходимости выполните `./Auricle-v2.0-linux-x64.AppImage --appimage-extract`; примеры находятся в `squashfs-root/usr/bin/_internal/examples/`.
-
-Открывайте проекты из примеров через диалог Open и сохраняйте рабочую копию в свой каталог. `asset_path()` разрешает artwork для исходников, wheel и замороженного приложения независимо от текущего каталога.
-
-## GitHub Actions
-
-`ci.yml` запускает тесты, собирает wheel/sdist и проверяет установленный wheel вне исходников. `release.yml` сначала вызывает CI, затем строит четыре нативные сборки и проверяет их запуск. Выходные файлы получают версию в имени. Только job публикации имеет `contents: write`.
-
-[Публикация](PUBLISHING.md) · [PyInstaller: spec files](https://pyinstaller.org/en/stable/spec-files.html) · [PyInstaller: runtime resources](https://pyinstaller.org/en/stable/runtime-information.html)
+Пайплайн не требует сертификатов Apple/Microsoft. macOS-сборка получает локальную ad-hoc подпись PyInstaller; доверенная Developer ID-подпись и notarization не настроены. Windows EXE также не подписан сертификатом издателя. Для публичного выпуска с доверенной подписью нужны сертификаты владельца проекта.

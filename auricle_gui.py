@@ -41,12 +41,17 @@ from coordinated_kit import (ROLES as KIT_ROLES, STYLES as KIT_STYLES, METERS as
                              voice_role, infer_role, phrase_bars, STEP_BEATS)
 from motif_development import MODES as MOTIF_MODES, settings as motif_settings, digest as motif_digest
 from pattern_chance import step_chances
+from piano_roll_history import PianoRollHistory, preview_notes, visible_notes, clock_beat_at
 from auricle_catalogs import DEFAULT_PATTERN
 from generators import parse_number_list, fixed_pattern
 from mutators import mutators_for_target, mutator_help
 from drum_editing import sound_snapshot, apply_sound
 from drum_rhythm import enable_musical_kit
 from drum_rhythm_ui import DrumRhythmPanel
+from drum_articulation import supports_articulation
+from drum_articulation_ui import DrumArticulationPanel
+from strum import supports_strum
+from strum_ui import StrumPanel
 from project_history_ui import HistoryController
 from project_history import document_state, parameter_only_changes
 from auricle_persistence import project_from_dict
@@ -429,6 +434,11 @@ class Knob(QWidget):
             host = host.parentWidget()
         automate.setEnabled(host is not None)
         influences.setEnabled(host is not None)
+        from section_automation import ARTICULATION_NUMERIC_KEYS
+        macro_actions = {}
+        if host is not None and binding[1] in ARTICULATION_NUMERIC_KEYS:
+            for source in ('energy', 'tension'):
+                macro_actions[menu.addAction(f'Composition: link {source.title()}…')] = source
         chosen = menu.exec(event.globalPos())
         target = {"kind": "block_parameter", "block_id": int(binding[0]),
                   "parameter": str(binding[1]), "integer": bool(self.integer),
@@ -441,6 +451,8 @@ class Knob(QWidget):
             host._assign_composition_automation(*binding)
         elif chosen == influences and host is not None:
             host._open_automation_influences(*binding)
+        elif chosen in macro_actions:
+            host._link_articulation_macro(*binding, macro_actions[chosen])
         menu.deleteLater()
 
     def _norm(self):
@@ -3755,7 +3767,7 @@ class DrumKitEditor(LayerGroup):
         self.creative_knobs = []
         descriptions = {
             "kit_complexity": ("Complexity", "Adds kick, snare, hat and percussion hits between the core beats."),
-            "kit_syncopation": ("Syncopation", "Shifts added hits towards offbeats. Raise Complexity or Toms to hear it."),
+            "kit_syncopation": ("Syncopation", "Metric / Barlow: PS, probability of anticipating a pulse by one 16th; Fragment limits consecutive anticipations. Other engines shift added hits towards offbeats."),
             "kit_tom_activity": ("Toms", "Adds tom hits throughout the bar, even when the source pattern is silent. Requires a voice with the Tom role."),
             "kit_variation": ("Variation", "Chooses new weak-beat patterns across bars and phrases; zero repeats the same added pattern. Core beats stay stable."),
         }
@@ -3781,7 +3793,8 @@ class DrumKitEditor(LayerGroup):
         creative.addWidget(self.new_variant)
         bind_attributes(self, "kit", {"style_selector": "kit_style", "meter_selector": "kit_meter", "phrase_length": "kit_phrase_bars", "keep_beat": "kit_protect_anchors", "new_variant": "kit_variant"})
         outer.addLayout(creative)
-        self.rhythm_panel = DrumRhythmPanel(self, ParamKnob, ContrastSpinBox, source_label)
+        self.rhythm_panel = DrumRhythmPanel(self, ParamKnob, ContrastSpinBox, source_label,
+                                           range_knob_class=RangeKnob)
         outer.addWidget(self.rhythm_panel)
         self.update_position()
 
@@ -4552,6 +4565,14 @@ class PianoRollWidget(QWidget):
         self.block = None
         self.project = None
         self.history = []
+        self.performance_history = None
+        self.position_beats = None
+        self.frozen_notes = None
+        self.frozen_beat = None
+        self.frozen_preview = None
+        self.frozen_name = None
+        self._preview_cache = (None, ())
+        self._note_geometry = []
         self.pattern_seconds = 2.0
         self.seq_interval = 0.125
         self.running = False
@@ -4591,10 +4612,15 @@ class PianoRollWidget(QWidget):
 
     def mouseMoveEvent(self, event):
         note = self._keyboard_note_at(event.position())
-        self.setToolTip(f"{self.note_label(note)} · MIDI {note}" if note is not None else "")
+        text = f"{self.note_label(note)} · MIDI {note}" if note is not None else ''
+        if note is None:
+            for rect, text_value in reversed(self._note_geometry):
+                if rect.contains(event.position()):
+                    text = text_value; break
+        self.setToolTip(text)
         super().mouseMoveEvent(event)
 
-    def set_data(self, block, history=None, pattern_seconds=None, seq_interval=None, running=False, project=None):
+    def set_data(self, block, history=None, pattern_seconds=None, seq_interval=None, running=False, project=None, notes=None, position_beats=None):
         if project is not None:
             self.project = project
         if self.frozen:
@@ -4603,6 +4629,8 @@ class PianoRollWidget(QWidget):
         was_running = self.running
         self.block = block
         self.history = list(history or [])
+        self.performance_history = tuple(notes) if notes is not None else None
+        self.position_beats = float(position_beats) if position_beats is not None else None
         if pattern_seconds is not None:
             self.pattern_seconds = max(0.05, float(pattern_seconds))
         if seq_interval is not None:
@@ -4642,58 +4670,48 @@ class PianoRollWidget(QWidget):
                 self.frozen_at = float(snapshot[1])
                 if len(snapshot) > 2:
                     self.seq_interval = float(snapshot[2])
+                self.frozen_notes = snapshot[3] if len(snapshot) > 3 else None
+                self.frozen_beat = snapshot[4] if len(snapshot) > 4 else None
+                self.frozen_preview = snapshot[5] if len(snapshot) > 5 else None
+                self.frozen_name = snapshot[6] if len(snapshot) > 6 else None
             else:
                 self.frozen_at = self._display_time()
                 # Retain the bounded input history so Length can also be
                 # adjusted while frozen, without changing the time anchor.
                 self.frozen_history = list(self.history)
+                self.frozen_notes = self.performance_history
+                self.frozen_beat = self.position_beats
+                self.frozen_preview = tuple(self._preview_notes()) if self.performance_history is None and not self.history else None
+                self.frozen_name = getattr(self.block, 'name', None)
         self.frozen = value
         if not value:
             self.frozen_history = []
+            self.frozen_notes = self.frozen_beat = self.frozen_preview = self.frozen_name = None
         self.update()
 
     def snapshot(self):
-        return (list(self.frozen_history), self.frozen_at, self.seq_interval) if self.frozen else None
+        return (list(self.frozen_history), self.frozen_at, self.seq_interval, self.frozen_notes,
+                self.frozen_beat, self.frozen_preview, self.frozen_name) if self.frozen else None
+
+    def _performance_events(self):
+        notes = self.frozen_notes if self.frozen else self.performance_history
+        beat = self.frozen_beat if self.frozen else self.position_beats
+        return visible_notes(notes or (), self.view_steps, self._display_time(), self.seq_interval, beat)
+
+    def _preview_notes(self):
+        if self.frozen and self.frozen_preview is not None:
+            return self.frozen_preview
+        block = self.block
+        if block is None or self.project is None: return ()
+        owners = getattr(block, 'drum_voices', None) or [block]
+        signature = (id(self.project), self.project.seed, self.project.root_note, self.project.scale, self.view_steps,
+                     tuple((owner.id, owner.block_type, owner.midi_note, repr(owner.parameters), repr(owner.outputs)) for owner in owners))
+        if self._preview_cache[0] != signature:
+            self._preview_cache = (signature, tuple(preview_notes(self.project, block, getattr(self, 'engine', None), self.view_steps)))
+        return self._preview_cache[1]
 
     def _generated_events(self):
-        b = self.block
-        if not b:
-            return []
-        if str(getattr(b, "block_type", "")).upper() == "DRUM" and getattr(b, "drum_voices", None):
-            events = []
-            for voice in b.drum_voices:
-                rhythm = voice.outputs.get("rhythm", []) or []
-                velocity = voice.outputs.get("velocity", []) or []
-                duration = voice.outputs.get("duration", []) or []
-                pitch = voice.outputs.get("pitch", []) or []
-                for i, value in enumerate(rhythm):
-                    if float(value) <= 0.001:
-                        continue
-                    note = midi_note_for(self.project, voice, pitch[i] if i < len(pitch) else 0.0)
-                    vel = float(velocity[i] if i < len(velocity) else .8)
-                    dur = float(duration[i] if i < len(duration) else voice.parameters.get("gate", .78))
-                    events.append((i, note, max(.05, dur), max(.05, min(1.0, vel))))
-            return events
-        rhythm = b.outputs.get('rhythm', []) or []
-        pitch = b.outputs.get('pitch', []) or []
-        velocity = b.outputs.get('velocity', []) or []
-        duration = b.outputs.get('duration', []) or []
-        events = []
-        if rhythm:
-            for i, r in enumerate(rhythm):
-                if float(r) <= 0.001:
-                    continue
-                vel = float(velocity[i] if i < len(velocity) else .8)
-                dur = float(duration[i] if i < len(duration) else b.parameters.get('gate', .78))
-                root_pitch = pitch[i] if i < len(pitch) else 0.0
-                if str(getattr(b, "block_type", "")).upper() in ("CHORD", "PAD"):
-                    engine = getattr(self, "engine", None)
-                    tones = engine._chord_pitches(b, root_pitch) if engine is not None else [root_pitch]
-                    for tone in tones:
-                        events.append((i, midi_note_for(self.project, b, tone), max(.05, dur), max(.05, min(1.0, vel))))
-                else:
-                    events.append((i, midi_note_for(self.project, b, root_pitch), max(.05, dur), max(.05, min(1.0, vel))))
-        return events
+        return [(note.step, note.note, note.duration, note.velocity) for note in self._preview_notes()]
 
     def _history_events(self, now=None):
         now = self._display_time() if now is None else float(now)
@@ -4716,13 +4734,27 @@ class PianoRollWidget(QWidget):
         w = max(20, r.width() - left - right)
         h = max(20, r.height() - top - bottom)
         history_events = self._history_events()
-        use_history = self.running or bool(self.history) or bool(self.frozen_history)
-
-        if use_history:
-            notes = [e[1] for e in history_events]
+        detailed = (self.frozen_notes if self.frozen else self.performance_history) is not None
+        use_history = detailed or self.running or bool(self.history) or bool(self.frozen_history)
+        render_notes = []
+        if detailed:
+            performance = self._performance_events()
+            render_notes = [(item.step, item.note.note, item.duration, item.note.velocity, item.note.kind, item.note)
+                            for item in performance]
+            stream = 'generated · no MIDI port' if performance and all(item.note.stream == 'generated' for item in performance) else 'MIDI output'
+            if performance and len({item.note.stream for item in performance}) > 1: stream = 'MIDI + generated'
+            count_text = f'{stream} · {len(render_notes)} notes'
+        elif use_history:
+            start = self._display_time() - self.view_seconds
+            render_notes = [((stamp - start) / self.seq_interval, note, .82, vel, 'note', None)
+                            for stamp, note, vel in history_events]
+            count_text = f'{len(render_notes)} events'
         else:
-            generated = [item for item in self._generated_events() if item[0] < self.view_steps]
-            notes = [e[1] for e in generated]
+            render_notes = [(note.step, note.note, note.duration, note.velocity, note.kind, None) for note in self._preview_notes()]
+            count_text = f'buffer + articulations preview · {len(render_notes)} notes'
+        if self.frozen: count_text += ' · FROZEN'
+        notes = [item[1] for item in render_notes]
+        self._note_geometry = []
 
         if notes:
             lo = max(0, min(notes) - 2)
@@ -4778,44 +4810,39 @@ class PianoRollWidget(QWidget):
         p.save()
         p.setClipRect(QRectF(left, top, w, h))
         if use_history:
-            now = self._display_time()
-            display_seconds = self.view_seconds
-            start = now - display_seconds
-            # Current playhead is always at the right edge.
             p.setPen(QPen(accent, 2))
             p.drawLine(left + w - 1, top, left + w - 1, top + h)
-
-            for t, note, vel in history_events:
-                x = left + ((t - start) / display_seconds) * w
-                # Use the transport step duration as a compact note width.
-                ww = max(3.0, min(w * .18, w * self.seq_interval / display_seconds * .82))
-                y = top + h - (note - lo + 1) / span * h
-                hh = max(4.0, h / span * .8)
-                color = QColor(accent)
-                color.setAlpha(90 + int(150 * max(.0, min(1.0, vel))))
-                p.setBrush(QBrush(color))
-                p.setPen(QPen(accent, 1))
-                p.drawRoundedRect(int(x), int(y), int(ww), int(hh), 2, 2)
-            count_text = f"{len(history_events)} events" + (" · FROZEN" if self.frozen else "")
-        else:
-            for pos, note, dur, vel in generated:
-                x = left + pos * stepw + 1
-                ww = max(3, min(w / count * max(.5, dur), w))
-                y = top + h - (note - lo + 1) / span * h
-                hh = max(4, h / span * .8)
-                color = QColor(accent)
-                color.setAlpha(90 + int(150 * vel))
-                p.setBrush(QBrush(color))
-                p.setPen(QPen(accent, 1))
-                p.drawRoundedRect(int(x), int(y), int(max(3, ww)), int(hh), 2, 2)
-            count_text = f"generated pattern · {len(generated)} events"
+        colors = {'ratchet': QColor('#a778df'), 'grace': QColor('#e5a342'), 'strum': QColor('#42b8ac')}
+        names = {'ratchet': 'Ratchet', 'grace': 'Flam grace', 'strum': 'Strum', 'main': 'Principal', 'note': 'Note'}
+        for pos, note, dur, vel, kind, actual in render_notes:
+            x = left + max(0., pos) * stepw
+            end_x = left + min(count, pos + dur) * stepw
+            ww = max(1.5, end_x - x)
+            y = top + h - (note - lo + 1) / span * h
+            hh = max(3., h / span * .8)
+            outline = colors.get(kind, QColor(accent))
+            color = QColor(outline); color.setAlpha(90 + int(150 * max(0., min(1., vel))))
+            rect = QRectF(x, y + max(0., h / span * .1), ww, hh)
+            p.setBrush(QBrush(color)); p.setPen(QPen(outline, 1))
+            p.drawRoundedRect(rect, 1.5, 1.5)
+            text = f'{names.get(kind, kind)} · {self.note_label(note)} · MIDI {note} · velocity {round(vel * 127)}'
+            if actual is not None:
+                end_beat = actual.end_beat if actual.end_beat is not None else (self.frozen_beat if self.frozen else self.position_beats)
+                length = max(0., (end_beat if end_beat is not None else actual.beat) - actual.beat)
+                text += f'\nOnset {actual.beat:.5g} beats · length {length:.5g} beats'
+                text += f'\nFrom source {actual.beat - actual.source_beat:+.5g} beats · CH {actual.channel + 1} · {actual.port or "generated / no MIDI output"}'
+                if actual.end is None: text += ' · held at view anchor'
+            else:
+                text += f'\nPreview step {pos:.5g} · length {dur * .25:.5g} beats'
+            self._note_geometry.append((rect.intersected(QRectF(left, top, w, h)).adjusted(-2, -1, 2, 1), text))
         p.restore()
         p.setPen(QPen(grid, 1))
         p.setBrush(Qt.NoBrush)
         p.drawRect(left, top, w, h)
         p.setPen(QPen(fg, 1))
-        title = self.block.name if self.block else "Block"
-        p.drawText(left, 14, f"{title} · {count} steps · {self.view_seconds:g}s · {count_text}")
+        title = self.frozen_name if self.frozen and self.frozen_name else self.block.name if self.block else "Block"
+        caption = f"{title} · {count} steps · {self.view_seconds:g}s at current tempo · {count_text}"
+        p.drawText(left, 14, p.fontMetrics().elidedText(caption, Qt.ElideRight, w))
         p.end()
 
 
@@ -4828,6 +4855,7 @@ class MainWindow(QMainWindow):
     _midi_input_signal = Signal(str, object)
     _midi_input_event_signal = Signal(object)
     _generated_event_signal = Signal(object, object, object, object)
+    _piano_event_signal = Signal()
     _status_message_signal = Signal(str)
     _transport_command_applied_signal = Signal(object)
 
@@ -4836,6 +4864,7 @@ class MainWindow(QMainWindow):
         self._midi_message_signal.connect(self._handle_midi_message)
         self._midi_input_signal.connect(self._handle_midi_input, Qt.QueuedConnection)
         self._generated_event_signal.connect(self._handle_generated_event)
+        self._piano_event_signal.connect(self._drain_piano_events)
         self._status_message_signal.connect(self._show_status_message)
         self._transport_command_applied_signal.connect(self._handle_transport_command_applied)
         self.setWindowTitle("Auricle — Algorithmic Music Generator")
@@ -4853,6 +4882,10 @@ class MainWindow(QMainWindow):
         self.transport = Transport(self)
         self.selected_block_id = self.project.blocks[0].id if self.project.blocks else None
         self.selected_drum_voice_id = None
+        self._piano_history = PianoRollHistory()
+        self._piano_packet_lock = threading.Lock()
+        self._piano_packets = []
+        self._piano_wake_pending = False
         self._midi_events = {}
         self._generated_live_events = {}
         self._piano_freeze = None  # (events, timestamp, step interval) while frozen
@@ -5582,6 +5615,29 @@ class MainWindow(QMainWindow):
             self.midi_monitor.setUpdatesEnabled(True)
         self.midi_monitor.scrollToBottom()
 
+    def record_piano_event(self, packet):
+        # One Qt wake per burst, rather than another queued signal for every
+        # Note On and Off. The worker only copies scalars under a short lock.
+        notify = False
+        with self._piano_packet_lock:
+            if len(self._piano_packets) >= 65536:
+                self._piano_packets.clear()
+                self._piano_packets.append({**packet, 'action': 'reset'})
+            self._piano_packets.append(dict(packet))
+            if not self._piano_wake_pending:
+                self._piano_wake_pending = True; notify = True
+        if notify: self._piano_event_signal.emit()
+
+    def _drain_piano_events(self):
+        with self._piano_packet_lock:
+            packets = self._piano_packets; self._piano_packets = []
+            self._piano_wake_pending = False
+        for packet in packets: self._handle_piano_event(packet)
+
+    def _handle_piano_event(self, packet):
+        if packet.get('project_token') != id(self.project): return
+        self._piano_history.record(packet)
+
     def record_generated_event(self, block, event):
         if block is None:
             return
@@ -5687,16 +5743,24 @@ class MainWindow(QMainWindow):
                 and self.selected_block_id is not None):
             b = self._selected_inspector_entity()
             if b:
+                # A slow port or worker stall must not block the Qt heartbeat.
+                lock = self.transport._transport_lock
+                if not lock.acquire(blocking=False): return
+                try:
+                    position = clock_beat_at(self.engine.clock, time.monotonic(), self.project.tempo)
+                finally:
+                    lock.release()
                 interval = 60.0 / max(1, self.project.tempo) / 4.0
                 pattern_seconds = max(0.05, interval * max(1, int(self.project.length)))
                 history_ids = [int(b.id)]
                 if str(getattr(b, "block_type", "")).upper() == "DRUM":
                     history_ids.extend(int(voice.id) for voice in getattr(b, "drum_voices", None) or [])
                 history = []
-                for history_id in history_ids:
-                    history.extend(self._midi_events.get(history_id, []))
-                history.sort(key=lambda item: float(item[0]))
-                if b.mode == "LIVE" and len(history) < 16:
+                if not self._piano_history.has_run:
+                    for history_id in history_ids:
+                        history.extend(self._midi_events.get(history_id, []))
+                    history.sort(key=lambda item: float(item[0]))
+                if not self._piano_history.has_run and b.mode == "LIVE" and len(history) < 16:
                     generated = []
                     for history_id in history_ids:
                         generated.extend(self._generated_live_events.get(history_id, []))
@@ -5715,6 +5779,8 @@ class MainWindow(QMainWindow):
                     seq_interval=interval,
                     running=bool(self.transport.running),
                     project=self.project,
+                    notes=self._piano_history.snapshot(history_ids) if self._piano_history.has_run else None,
+                    position_beats=position,
                 )
 
     def _refresh_all(self):
@@ -6694,6 +6760,20 @@ class MainWindow(QMainWindow):
         musical_layout.addWidget(musical_pair)
         layout.addWidget(musical,3,0,1,2)
 
+        output_row = 4
+        if supports_articulation(b):
+            articulation, _articulation_content, articulation_layout = make_layer(
+                "DRUM ARTICULATION", "DRUM ARTICULATION", "Ratchet · Flam · per voice", False)
+            articulation_layout.addWidget(DrumArticulationPanel(self, b, ParamKnob, RangeKnob, source_label))
+            layout.addWidget(articulation, output_row, 0, 1, 2)
+            output_row += 1
+        if supports_strum(b):
+            strum, _strum_content, strum_layout = make_layer(
+                "STRUM", "STRUM", "Direction · spacing · dynamics", False)
+            strum_layout.addWidget(StrumPanel(self, b, ParamKnob, RangeKnob, source_label))
+            layout.addWidget(strum, output_row, 0, 1, 2)
+            output_row += 1
+
         # MIDI expression is a transport-level output layer shared by SEQ,
         # LIVE, Blocks, Perform and Composition. It does not alter note generation.
         midi_expression, midi_expression_content, midi_expression_layout = make_layer(
@@ -6721,7 +6801,7 @@ class MainWindow(QMainWindow):
         midi_expression_editor.changed.connect(
             lambda config, entity=b: self._set_midi_expression(entity, config))
         midi_expression_layout.addWidget(midi_expression_editor)
-        layout.addWidget(midi_expression,4,0,1,2)
+        layout.addWidget(midi_expression,output_row,0,1,2)
 
         # MOTION — only Mutation and Process for now.
         motion, motion_content, motion_layout = make_layer("MOTION","MOTION",f"{len(b.mutators)} mutations · {len(b.processes)} processes",False)
@@ -6748,11 +6828,11 @@ class MainWindow(QMainWindow):
         proc_group=InspectorGroup("PROCESS",expanded=self._inspector_state.get((b.id,"PROCESS LAYER"),True)); proc_group.setObjectName("inspectorGroup_PROCESS"); proc_group.set_summary(f"{len(b.processes)} processes"); proc_group.accordion_toggled.connect(lambda checked,bid=b.id:self._remember_group(bid,"PROCESS LAYER",checked)); proc_layout=QVBoxLayout(proc_group); proc_layout.setContentsMargins(6,6,6,6); proc_layout.setSpacing(3)
         for idx,proc in enumerate(b.processes):
             card=QWidget(); cv=QVBoxLayout(card); cv.setContentsMargins(0,0,0,0); cv.setSpacing(3); head=QHBoxLayout(); head.setSpacing(4); typ=QComboBox(); typ.addItems(PROCESS_TYPES); typ.setCurrentText(proc.type); typ.setFixedWidth(118); typ.currentTextChanged.connect(lambda x,b=b,i=idx:self._set_process_type(b,i,x)); head.addWidget(typ); tgt=QComboBox(); tgt.addItems(PROCESS_TARGETS); tgt.setCurrentText(proc.target); tgt.setFixedWidth(72); tgt.currentTextChanged.connect(lambda x,b=b,i=idx:self._set_process_target(b,i,x)); head.addWidget(tgt); bind_help(typ, "type", "process"); bind_help(tgt, "target", "process"); head.addWidget(QLabel(f"Process {idx+1}"),1); rem=QPushButton("×"); rem.setObjectName("cardDelete"); rem.setFixedSize(22,22); rem.clicked.connect(lambda _,b=b,i=idx:self.remove_process(b,i)); head.addWidget(rem); cv.addLayout(head); cv.addWidget(ProcessInlineControls(proc,self.project,b,self)); proc_layout.addWidget(card)
-        addp=QPushButton("+ Add"); addp.setObjectName("inspectorAddButton"); addp.setAccessibleName("Add process"); addp.setFixedHeight(26); addp.clicked.connect(self.add_process); proc_layout.addWidget(addp,0,Qt.AlignLeft); motion_layout.addWidget(proc_group); layout.addWidget(motion,5,0,1,2)
+        addp=QPushButton("+ Add"); addp.setObjectName("inspectorAddButton"); addp.setAccessibleName("Add process"); addp.setFixedHeight(26); addp.clicked.connect(self.add_process); proc_layout.addWidget(addp,0,Qt.AlignLeft); motion_layout.addWidget(proc_group); layout.addWidget(motion,output_row+1,0,1,2)
 
         # MONITOR / diagnostics
         monitor, monitor_content, monitor_layout = make_layer("MONITOR","MONITOR","piano roll",False)
-        piano_group=InspectorGroup("MIDI PIANO ROLL"); piano_group.setObjectName("inspectorGroup_PIANO"); piano_group.set_summary("generated note events"); piano_lay=QVBoxLayout(piano_group); piano_lay.setContentsMargins(7,7,7,7); piano_lay.setSpacing(3)
+        piano_group=InspectorGroup("MIDI PIANO ROLL"); piano_group.setObjectName("inspectorGroup_PIANO"); piano_group.set_summary("emitted notes · R Ratchet · F Flam · S Strum"); piano_lay=QVBoxLayout(piano_group); piano_lay.setContentsMargins(7,7,7,7); piano_lay.setSpacing(3)
         piano_controls = QHBoxLayout()
         length_label = QLabel("Length (steps)")
         self.piano_roll_length = ValueStepper(self._piano_length_steps)
@@ -6766,6 +6846,10 @@ class MainWindow(QMainWindow):
         piano_controls.addWidget(length_label)
         piano_controls.addWidget(self.piano_roll_length)
         piano_controls.addStretch()
+        legend = QLabel('<span style="color:#a778df">R</span> · <span style="color:#e5a342">F</span> · <span style="color:#42b8ac">S</span>')
+        legend.setAccessibleName('Ratchet, Flam, Strum note colors')
+        bind_help(legend, 'events', 'piano_roll')
+        piano_controls.addWidget(legend)
         freeze = QCheckBox("FREEZE")
         bind_help(freeze, "freeze", "piano_roll")
         freeze.setChecked(self._piano_freeze is not None)
@@ -6778,7 +6862,7 @@ class MainWindow(QMainWindow):
         self._update_piano_roll()
         if self._piano_freeze is not None: self.piano_roll.set_frozen(True,self._piano_freeze)
         self.piano_roll_length.valueChanged.connect(self._set_piano_length_steps)
-        freeze.toggled.connect(self._set_piano_freeze); monitor_layout.addWidget(piano_group); layout.addWidget(monitor,6,0,1,2); layout.setRowStretch(7,1)
+        freeze.toggled.connect(self._set_piano_freeze); monitor_layout.addWidget(piano_group); layout.addWidget(monitor,output_row+2,0,1,2); layout.setRowStretch(output_row+3,1)
 
         # The new page has been built successfully. Swap it into the scroll
         # area only now, so a failed rebuild can never leave the Inspector
@@ -8327,7 +8411,7 @@ class MainWindow(QMainWindow):
             self._midi_learn_runtime.reset()
             self.engine.composition_runtime.playback_active = (resume_mode == "composition"
                                                                if resume_mode is not None else None)
-            self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
+            self._piano_history.clear(); self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
             self.performance.director_panel.apply_to_engine()
             self.engine.generate()
             for control in controls:
@@ -8416,7 +8500,7 @@ class MainWindow(QMainWindow):
             self.selected_block_id = block.id
             if any(voice.id == selection[1] for voice in block.drum_voices or []):
                 self.selected_drum_voice_id = selection[1]
-        self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
+        self._piano_history.clear(); self._midi_events.clear(); self._generated_live_events.clear(); self._piano_freeze = None
         if hasattr(self, "midi_sync_button"):
             sync = normalize_midi_sync(self.project.midi_sync)
             self.midi_sync_button.setText("SYNC ON" if sync["clock_out"] or sync["transport_messages"] else "SYNC")
@@ -8472,6 +8556,14 @@ class MainWindow(QMainWindow):
         dialog = InfluenceDialog(self, entity_id, key)
         dialog.setAttribute(Qt.WA_DeleteOnClose)
         dialog.show()
+
+    def _link_articulation_macro(self, entity_id, key, source):
+        panel = self.composition_panel.automation_panel
+        if panel.assign(int(entity_id), str(key), macro_source=source):
+            self.tabs.setCurrentWidget(self.composition_panel)
+            self.composition_panel.composition_tabs.setCurrentWidget(panel)
+            self.composition_panel.update_runtime()
+            self.set_message(f'{source.title()} response assigned to the selected section; playback is unchanged')
 
     def _attach_automation_context(self, control, entity_id, key):
         from section_automation import parameter_specs

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import functools
+import heapq
+from dataclasses import dataclass
 import math
 import threading
 import time
@@ -17,8 +19,23 @@ from auricle_drum import timing_offset
 from coordinated_kit import STEP_BEATS, voice_role
 from musical_clock import MusicalGrid
 from musical_events import MusicalEvent
+from drum_articulation import articulate, articulation_values, supports_articulation
+from piano_roll_history import clock_beat_at
+from strum import strum_hits, supports_strum
 from transport_queue import TransportCommandQueue
 from midi_expression import MidiExpressionRuntime, entity_expression_config, normalize_midi_sync
+
+
+@dataclass(frozen=True)
+class _PendingArticulation:
+    owner: Any
+    event: dict
+    port: Any
+    expires: float
+    context: tuple | None
+    route: tuple
+    mode: str
+    block_type: str
 
 def get_midi_input_names():
     """Return available MIDI inputs without crashing when the backend is absent."""
@@ -104,6 +121,9 @@ class Transport:
         # objects while a generator or Relations pass is reading them.
         self.gui_command_queue = TransportCommandQueue()
         self.gui_command_errors = 0
+        self._articulation_queue = []
+        self._articulation_serial = 0
+        self._articulation_note_beats = {}
 
     def enqueue_gui_command(self, callback, *, key=None, notification=None, label="GUI edit"):
         """Submit a model edit for serialized application on the transport thread.
@@ -126,7 +146,17 @@ class Transport:
                 continue
             notification = command.get("notification")
             signal = getattr(self.app, "_transport_command_applied_signal", None)
-            if notify and notification is not None and signal is not None:
+            # History/save can win the race with the next worker tick. A quiet
+            # commit must still deliver numeric readback, without dirtying the
+            # document or replaying structural refresh notifications.
+            if not notify and isinstance(notification, dict) and notification.get("parameter_feedback"):
+                notification = {key: notification[key] for key in
+                                ("block_id", "parameter_entity", "parameter_feedback")
+                                if key in notification}
+                notification["dirty"] = False
+            elif not notify:
+                continue
+            if notification is not None and signal is not None:
                 try:
                     signal.emit(notification)
                 except Exception:
@@ -163,6 +193,18 @@ class Transport:
         self.app.engine.clock.tempo = float(self.app.project.tempo)
         ratio = old / self.app.project.tempo
         if self.running:
+            # Articulated gates, like their pending onsets, retain musical time.
+            retimed = []
+            deadlines = {}
+            for item in self.active_notes:
+                end = self._articulation_note_beats.get(id(item))
+                if end is not None:
+                    item = (now + self.app.engine.clock.seconds_for_beats(
+                        max(0., end - self.app.engine.clock.position_beats), self.app.project.tempo), *item[1:])
+                    deadlines[id(item)] = end
+                retimed.append(item)
+            self.active_notes = retimed
+            self._articulation_note_beats = deadlines
             for schedule in (self.next_due, self.grid_due, self.next_live):
                 for owner, due in schedule.items():
                     schedule[owner] = now + (due - now) * ratio
@@ -297,10 +339,12 @@ class Transport:
     def _prime_schedules(self, now, position):
         """Re-anchor every scheduler to one musical position, without catch-up."""
         engine = self.app.engine
+        self._cancel_articulations()
         self._motif_schedule.clear()
         self._kit_schedule.clear()
         self._drum_mod_slots.clear()
         self.drum_output_history.clear()
+        self._record_piano(action="reset")
         for owner in self._playable_blocks():
             owner._parameter_feedback_event = None
         self._composition_section_key = None
@@ -424,7 +468,9 @@ class Transport:
         # Do not broadcast CC123 here: an output port may be shared with a DAW,
         # another sequencer, or hardware.  STOP must only release Auricle's
         # own notes.  A separate explicit panic action can use CC123 if needed.
+        self._cancel_articulations()
         self._release_notes(lambda _due, _port, _note, _channel, _owner_id: True)
+        self._record_piano(action="cut")
 
     def _release_notes(self, predicate):
         """Release and remove active notes matching *predicate*.
@@ -442,6 +488,8 @@ class Transport:
                 remaining.append(item)
 
         self.active_notes = remaining
+        for item in removed:
+            self._articulation_note_beats.pop(id(item), None)
         released_keys = set()
         for _due, port, note, channel, owner_id in removed:
             self.expression_runtime.note_released(owner_id, note)
@@ -458,12 +506,13 @@ class Transport:
             try:
                 message = mido.Message("note_off", channel=channel, note=note, velocity=0)
                 port.send(message)
-                self._monitor(None, "", message)
+                self._monitor(None, "", message, port=port)
             except Exception:
                 pass
 
     def _release_port_notes(self, port: Any):
         """Release all Auricle claims on a port before that port is closed."""
+        self._cancel_articulations(port=port)
         self._release_notes(lambda _due, old_port, _note, _channel, _owner_id: old_port is port)
 
     def _log_error(self, context: str, exc: Exception):
@@ -505,14 +554,35 @@ class Transport:
         # 0.05 = very short staccato, 1.0 = full interval, >1 = legato/overlap.
         duration_beats = event.get("duration_beats")
         if duration_beats is not None:
-            return max(0.025, self.app.engine.clock.seconds_for_beats(
+            return max(.001 if event.get("_articulation") else .025, self.app.engine.clock.seconds_for_beats(
                 max(0.0, float(duration_beats)), self.app.project.tempo
             ))
         gate = float(event.get("duration", block.parameters.get("gate", 0.78)))
         return max(0.025, interval * _clamp(gate, 0.05, 1.5))
 
-    def _monitor(self, block: Optional[Block], port_name: str, message: Any):
-        """Send an exact outbound MIDI message to the GUI monitor."""
+    def _record_piano(self, **packet):
+        """Capture worker time before Qt queues; diagnostics never affect MIDI."""
+        callback = getattr(self.app, "record_piano_event", None)
+        if callback is None:
+            return
+        try:
+            packet.setdefault("timestamp", time.monotonic())
+            packet.setdefault("beat", clock_beat_at(self.app.engine.clock, packet["timestamp"], self.app.project.tempo))
+            packet["project_token"] = id(self.app.project)
+            callback(packet)
+        except Exception:
+            pass
+
+    def _monitor(self, block: Optional[Block], port_name: str, message: Any, *, port=None, event=None):
+        """Observe successful wire messages independently of the Monitor toggle."""
+        if message.type in ("note_on", "note_off"):
+            event = event or {}
+            self._record_piano(action="on" if message.type == "note_on" and message.velocity > 0 else "off",
+                owner_id=getattr(block, "id", None), port=port_name, port_key=id(port) if port is not None else port_name,
+                note=message.note, velocity=message.velocity / 127., channel=message.channel,
+                kind=event.get("_articulation", "note"),
+                source_beat=event.get("_source_beat", event.get("beat", self.app.engine.clock.position_beats)),
+                scheduled_beat=event.get("beat", self.app.engine.clock.position_beats))
         try:
             self.app.log_midi_message(block, port_name, message)
         except Exception:
@@ -551,6 +621,7 @@ class Transport:
         drum = self.app.engine.coordinated_drum(block) if getattr(block, "parent_id", None) is not None else None
         if drum is not None and voice_role(block) in ("closed_hat", "open_hat"):
             hats = {v.id for v in drum.drum_voices if voice_role(v) in ("closed_hat", "open_hat")}
+            self._cancel_articulations(owners=hats - {block.id})
             self._release_notes(lambda _due, _port, _note, _channel, owner: owner in hats)
         # CHORD events carry ``pitches`` and are emitted as simultaneous MIDI
         # note-ons. Non-chord events retain the original scalar path.
@@ -618,7 +689,7 @@ class Transport:
         if event is None:
             return None
         interval_beats = self.app.engine.clock.beats_for_seconds(interval, self.app.project.tempo)
-        event = MusicalEvent.from_mapping(
+        musical_event = MusicalEvent.from_mapping(
             event,
             beat=beat,
             interval_beats=interval_beats,
@@ -627,14 +698,196 @@ class Transport:
             channel=getattr(block, "midi_channel", None),
             port=self._resolved_port_name(block),
             recompute_duration=True,
-        ).to_mapping()
+        )
+        event = musical_event.to_mapping()
+        if self._articulation_queue:
+            self._cancel_articulations(owners={block.id})
+        if supports_strum(block) and block.parameters.get("strum_probability", 0):
+            source_grid = MusicalGrid(engine.sequence_step_beats(block, live=block.mode == "LIVE"))
+            hits = strum_hits(musical_event, block.parameters, self.app.project.seed,
+                              lambda pitch: midi_note_for(self.app.project, block, pitch),
+                              source_step=source_grid.slot_at(beat, "floor"))
+            if hits is not None:
+                self._schedule_strum(block, event, hits, port, interval)
+                return event if hits else None
+        if supports_articulation(block) and (block.parameters.get("drum_ratchet_probability", 0)
+                                             or block.parameters.get("drum_flam_probability", 0)):
+            hits = articulate(musical_event, block.parameters, self.app.project.seed)
+            if len(hits) > 1 or (hits and hits[0].offset > 0):
+                self._schedule_articulation(block, event, hits, port, interval)
+                return event
+        self._emit_accepted_event(block, event, port, interval)
+        return event
+
+    def _emit_accepted_event(self, block, event, port, interval):
         try:
             self.app.record_generated_event(block, event)
         except Exception:
             pass
         if port is not None:
             self._send_event(block, event, port, interval)
-        return event
+        elif getattr(self.app, "record_piano_event", None) is not None:
+            # No physical output: retain accepted generated sub-hits, explicitly
+            # labelled as generated rather than mixed into the MIDI wire log.
+            stamp = time.monotonic()
+            beat = clock_beat_at(self.app.engine.clock, stamp, self.app.project.tempo)
+            duration = self._event_duration(block, interval, event)
+            if event.get("_articulation") == "strum":
+                duration = min(duration, self.app.engine.clock.seconds_for_beats(
+                    max(0., event["_articulation_end_beat"] - beat), self.app.project.tempo))
+            pitches = event.get("pitches") or [event.get("pitch", 0.)]
+            try:
+                channel = int(_clamp(int(block.midi_channel) - 1, 0, 15))
+            except (TypeError, ValueError):
+                channel = 0
+            for pitch in pitches:
+                self._record_piano(action="on", timestamp=stamp, beat=beat, owner_id=block.id,
+                    port="", port_key=("generated", block.id), channel=channel,
+                    note=midi_note_for(self.app.project, block, pitch),
+                    velocity=int(_clamp(int(127 * event.get("velocity", .8)), 1, 127)) / 127.,
+                    kind=event.get("_articulation", "note"), stream="generated",
+                    source_beat=event.get("_source_beat", event.get("beat", beat)),
+                    scheduled_beat=event.get("beat", beat), end=stamp + duration,
+                    end_beat=beat + self.app.engine.clock.beats_for_seconds(duration, self.app.project.tempo))
+
+    def _articulation_context(self, beat):
+        context = self.app.engine.composition_runtime.context_at(beat)
+        return (context["cycle"], context["section_id"]) if context is not None else None
+
+    def _schedule_articulation(self, block, event, hits, port, interval):
+        origin = self.app.engine.clock.position_beats
+        expires = origin + event["interval_beats"]
+        context = self._articulation_context(event["beat"])
+        route = (self._resolved_port_name(block), self._midi_channel(block),
+                 midi_note_for(self.app.project, block, event.get("pitch", 0.)))
+        for hit in hits:
+            part = dict(event, beat=event["beat"] + hit.offset,
+                        duration_beats=hit.duration, velocity=hit.velocity,
+                        _articulation=hit.kind, _source_beat=event["beat"])
+            if hit.offset <= 0:
+                self._emit_accepted_event(block, part, port, interval)
+                continue
+            if len(self._articulation_queue) >= 4096:
+                break
+            self._articulation_serial += 1
+            pending = _PendingArticulation(block, part, port, expires, context, route, block.mode, block.block_type)
+            heapq.heappush(self._articulation_queue,
+                           (origin + hit.offset, self._articulation_serial, pending))
+
+    def _schedule_strum(self, block, event, hits, port, interval):
+        origin = self.app.engine.clock.position_beats
+        expires = origin + min(event["interval_beats"], event["duration_beats"])
+        context = self._articulation_context(event["beat"])
+        for hit in hits:
+            part = dict(event, pitch=hit.pitch, beat=event["beat"] + hit.offset,
+                        duration_beats=hit.duration, velocity=hit.velocity,
+                        _articulation="strum", _source_beat=event["beat"],
+                        _articulation_end_beat=origin + hit.offset + hit.duration)
+            part.pop("pitches", None)  # Each scheduled event owns exactly one note.
+            for key in ("harmony_remaining_beats", "dialogue_remaining_beats"):
+                if key in part:
+                    try:
+                        remaining = float(part[key]) - hit.offset
+                    except (TypeError, ValueError, OverflowError):
+                        part.pop(key)
+                    else:
+                        if math.isfinite(remaining):
+                            part[key] = max(0., remaining)
+                        else:
+                            part.pop(key)
+            if hit.offset <= 0:
+                self._emit_accepted_event(block, part, port, interval)
+                continue
+            if len(self._articulation_queue) >= 4096:
+                break
+            route = (self._resolved_port_name(block), self._midi_channel(block),
+                     midi_note_for(self.app.project, block, hit.pitch))
+            pending = _PendingArticulation(block, part, port, expires, context, route, block.mode, block.block_type)
+            self._articulation_serial += 1
+            heapq.heappush(self._articulation_queue,
+                           (origin + hit.offset, self._articulation_serial, pending))
+
+    def _cancel_articulations(self, owners=None, port=None):
+        if not self._articulation_queue:
+            return
+        if owners is None and port is None:
+            self._articulation_queue.clear()
+            return
+        self._articulation_queue[:] = [item for item in self._articulation_queue
+                                      if not ((owners is not None and item[2].owner.id in owners)
+                                              or (port is not None and item[2].port is port))]
+        heapq.heapify(self._articulation_queue)
+
+    def _flush_articulations(self):
+        if not self._articulation_queue:
+            return
+        engine = self.app.engine
+        beat = engine.clock.position_beats
+        present = {id(block) for block in self._playable_blocks()}
+        current_context = self._articulation_context(beat)
+        # At most one overdue sub-hit per voice after a worker stall.
+        due = {}
+        strums = []
+        while self._articulation_queue and self._articulation_queue[0][0] <= beat + 1e-8:
+            item = heapq.heappop(self._articulation_queue)
+            if item[2].event["_articulation"] == "strum":
+                # Distinct chord tones are not repeated drum triggers. Keep
+                # still-valid tones together if one worker tick covers several.
+                strums.append(item)
+                continue
+            previous = due.get(item[2].owner.id)
+            # Keep the principal after a grace, even when a very tight repeat
+            # grid puts several sub-hits inside one worker tick.
+            if previous is None or previous[2].event["_articulation"] != "main":
+                due[item[2].owner.id] = item
+        for _due, _serial, pending in sorted([*due.values(), *strums]):
+            block, event, port = pending.owner, pending.event, pending.port
+            parent = engine.drum_parent_for(block)
+            if (id(block) not in present or not (supports_articulation(block) or supports_strum(block))
+                    or block.muted or (parent is not None and parent.muted)
+                    or pending.mode != block.mode or beat >= pending.expires - 1e-8
+                    or pending.context != current_context or pending.block_type != block.block_type):
+                continue
+            current_route = (self._resolved_port_name(block), self._midi_channel(block),
+                             midi_note_for(self.app.project, block, event.get("pitch", 0.)))
+            if pending.route != current_route or self.outputs.get(pending.route[0]) is not port:
+                continue
+            if not engine.dialogue_runtime.can_play(block, beat):
+                continue
+            if pending.context is not None:
+                runtime = engine.composition_runtime
+                section = runtime.context_at(beat)["section"]
+                if not all(runtime.block_settings(section, owner.id)["enabled"]
+                           for owner in (block, parent) if owner is not None):
+                    continue
+            if event["_articulation"] == "ratchet" and articulation_values(block.parameters)["drum_ratchet_probability"] <= 0:
+                continue
+            if event["_articulation"] == "strum":
+                remaining = event["_articulation_end_beat"] - beat
+                if remaining <= 1e-8:
+                    continue
+                event = dict(event, duration_beats=remaining)
+            try:
+                self._emit_accepted_event(block, event, port,
+                                          engine.clock.seconds_for_beats(event["interval_beats"], self.app.project.tempo))
+            except Exception as exc:
+                self._cancel_articulations(owners={block.id})
+                self._log_error(f"articulation voice={block.id}", exc)
+
+    def _event_duration(self, block, interval, event):
+        duration = self._note_duration(block, interval, event)
+        runtime = getattr(self.app.engine, "composition_runtime", None)
+        if runtime is not None and runtime.enabled() and runtime.ending() == "stop":
+            remaining = max(0., runtime.total_beats() - self.app.engine.clock.position_beats)
+            duration = min(duration, self.app.engine.clock.seconds_for_beats(
+                remaining, self.app.project.tempo))
+        if "harmony_remaining_beats" in event:
+            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
+                float(event["harmony_remaining_beats"]), self.app.project.tempo)))
+        if "dialogue_remaining_beats" in event:
+            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
+                float(event["dialogue_remaining_beats"]), self.app.project.tempo)))
+        return duration
 
     def _send_note(self, block: Block, event: dict[str, float], port: Any, interval: float):
         note = midi_note_for(self.app.project, block, event.get("pitch", 0.0))
@@ -661,15 +914,17 @@ class Transport:
                     try:
                         old_message = mido.Message("note_off", channel=old_channel, note=old_note, velocity=0)
                         old_port.send(old_message)
-                        self._monitor(block, self._resolved_port_name(block), old_message)
+                        self._monitor(block, self._resolved_port_name(block), old_message, port=old_port)
                     except Exception:
                         pass
         self.active_notes = remaining
+        for item in replaced:
+            self._articulation_note_beats.pop(id(item), None)
 
         try:
             port.send(message)
             resolved_port = self._resolved_port_name(block)
-            self._monitor(block, resolved_port, message)
+            self._monitor(block, resolved_port, message, port=port, event=event)
         except Exception as exc:
             self._log_error(f"note_on block={block.id} channel={channel + 1} note={note}", exc)
             resolved_port = self._resolved_port_name(block)
@@ -677,22 +932,27 @@ class Transport:
             if reopened is None:
                 raise
             reopened.send(message)
-            self._monitor(block, resolved_port, message)
+            self._monitor(block, resolved_port, message, port=reopened, event=event)
             port = reopened
 
-        duration = self._note_duration(block, interval, event)
-        runtime = getattr(self.app.engine, "composition_runtime", None)
-        if runtime is not None and runtime.enabled() and runtime.ending() == "stop":
-            remaining = max(0., runtime.total_beats() - self.app.engine.clock.position_beats)
-            duration = min(duration, self.app.engine.clock.seconds_for_beats(
-                remaining, self.app.project.tempo))
-        if "harmony_remaining_beats" in event:
-            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
-                float(event["harmony_remaining_beats"]), self.app.project.tempo)))
-        if "dialogue_remaining_beats" in event:
-            duration = min(duration, max(.005, self.app.engine.clock.seconds_for_beats(
-                float(event["dialogue_remaining_beats"]), self.app.project.tempo)))
-        self.active_notes.append((time.monotonic() + duration, port, note, channel, block.id))
+        duration = self._event_duration(block, interval, event)
+        due = time.monotonic() + duration
+        end_beat = None
+        if event.get("_articulation"):
+            clock = self.app.engine.clock
+            end_beat = clock.position_beats + clock.beats_for_seconds(duration, self.app.project.tempo)
+            if event["_articulation"] == "strum":
+                # Anchor the release to the clock snapshot, not the completion
+                # of each MIDI send; a slower port cannot stagger a shared end.
+                end_beat = min(end_beat, event["_articulation_end_beat"])
+                anchor = getattr(clock, "_last_time", None)
+                if clock.running and anchor is not None:
+                    due = min(due, anchor + clock.seconds_for_beats(
+                        end_beat - clock.position_beats, self.app.project.tempo))
+        item = (due, port, note, channel, block.id)
+        self.active_notes.append(item)
+        if end_beat is not None:
+            self._articulation_note_beats[id(item)] = end_beat
 
     def _release_due(self, now: float):
         due_items = [item for item in self.active_notes if now >= item[0]]
@@ -701,6 +961,8 @@ class Transport:
         due_ids = {id(item) for item in due_items}
         remaining = [item for item in self.active_notes if id(item) not in due_ids]
         self.active_notes = remaining
+        for item in due_items:
+            self._articulation_note_beats.pop(id(item), None)
         for _due, port, note, channel, _owner_id in due_items:
             still_claimed = any(
                 old_port is port and old_note == note and old_channel == channel
@@ -711,7 +973,7 @@ class Transport:
             try:
                 message = mido.Message("note_off", channel=channel, note=note, velocity=0)
                 port.send(message)
-                self._monitor(None, "", message)
+                self._monitor(None, "", message, port=port)
             except Exception:
                 pass
 
@@ -721,7 +983,9 @@ class Transport:
         parent = next((block for block in self.app.project.blocks if block.id == int(block_id)), None)
         if parent is not None and getattr(parent, "drum_voices", None):
             owned.update(int(voice.id) for voice in parent.drum_voices)
+        self._cancel_articulations(owners=owned)
         self._release_notes(lambda _due, _port, _note, _channel, owner_id: owner_id in owned)
+        self._record_piano(action="cut", owners=tuple(owned))
 
     def set_block_muted(self, block_id: int, muted: bool):
         """Apply mute/unmute immediately to the running transport.
@@ -1351,6 +1615,11 @@ class Transport:
         if key == self._composition_section_key:
             return
         previous = self._composition_context
+        if previous is not None:
+            self._cancel_articulations()
+            owners = {item[4] for item in self.active_notes if id(item) in self._articulation_note_beats}
+            if owners:
+                self._release_notes(lambda _due, _port, _note, _channel, owner: owner in owners)
         if context is not None:
             for block in self._playable_blocks():
                 was_enabled = True
@@ -1385,6 +1654,7 @@ class Transport:
         # generated below is therefore guaranteed at least one tick late.
         engine.apply_pending_parameter_modulations()
         self._release_due(now)
+        self._flush_articulations()
         interval = self.seq_interval
         master_grid = MusicalGrid(0.25)
         self._master_step = master_grid.slot_at(engine.clock.position_beats, "floor") + 1

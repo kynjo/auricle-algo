@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build on the target OS; PYTHON selects the interpreter used to create the venv.
 set -euo pipefail
 cd "$(dirname "$0")"
 if [ ! -x .venv-build/bin/python ]; then
@@ -7,4 +6,16 @@ if [ ! -x .venv-build/bin/python ]; then
 fi
 .venv-build/bin/python -m pip install -r requirements-build.txt
 .venv-build/bin/python -m PyInstaller --noconfirm --clean Auricle.spec
-printf '%s\n' "Build complete. See dist/ and docs/BUILDING.md."
+.venv-build/bin/python packaging/smoke_native.py
+case "$(uname -s)" in
+  Darwin)
+    case "$(uname -m)" in
+      arm64) target=macos-arm64 ;;
+      x86_64) target=macos-x64 ;;
+      *) echo "Unsupported macOS architecture" >&2; exit 1 ;;
+    esac ;;
+  Linux) target=linux-x64 ;;
+  *) echo "Use build_windows.bat on Windows" >&2; exit 1 ;;
+esac
+.venv-build/bin/python packaging/package_release.py "$target"
+printf '%s\n' "Build complete: out/"
