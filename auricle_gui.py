@@ -56,6 +56,7 @@ from project_history_ui import HistoryController
 from project_history import document_state, parameter_only_changes
 from auricle_persistence import project_from_dict
 from harmonic_plan_ui import HarmonicPlanPanel
+from sound_presets_ui import SoundPresetDialog
 from composition_planner_ui import CompositionPlannerPanel
 from instrument_dialogue_ui import DialogueControls
 from auricle_resources import asset_path, REQUIRED_ASSETS
@@ -6379,7 +6380,18 @@ class MainWindow(QMainWindow):
             "CHORD": "Harmonic event: explicit simultaneous diatonic voicing.",
             "DRUM": "Rhythmic role: fixed percussion notes.",
         }.get(b.block_type, ""))
-        page._auricle_reflow_forms.append(InspectorIdentity(self, gf, identity_fields, role_label))
+        role_footer = QWidget()
+        role_row = QHBoxLayout(role_footer)
+        role_row.setContentsMargins(0, 0, 0, 0)
+        role_label.setWordWrap(True)
+        role_row.addWidget(role_label, 1)
+        presets_button = QPushButton("Presets…")
+        presets_button.setObjectName("soundPresets")
+        presets_button.setAccessibleName("Algorithm and block presets")
+        presets_button.setToolTip("Browse factory presets, compare parameters, or save the authored settings of this algorithm or block")
+        presets_button.clicked.connect(lambda _=False, b=b: self._open_sound_presets(b))
+        role_row.addWidget(presets_button)
+        page._auricle_reflow_forms.append(InspectorIdentity(self, gf, identity_fields, role_footer))
         layout.addWidget(general,0,0,1,2)
 
         for control, key in ((name, "name"), (block_type, "block_type"), (alg, "algorithm"), (mode, "mode"),
@@ -6727,7 +6739,7 @@ class MainWindow(QMainWindow):
             musical_groups.append(role)
 
         if b.block_type in ("CHORD", "PAD", "BASS", "MELODY"):
-            follow_plan = QCheckBox("Follow harmonic plan (Perform)")
+            follow_plan = QCheckBox("Follow harmonic plan")
             follow_plan.setChecked(bool(b.parameters.get("harmonic_follow", True)))
             follow_plan.toggled.connect(lambda value, b=b: self._set_param(b, "harmonic_follow", value))
             bind_help(follow_plan, "harmonic_follow")
@@ -7258,6 +7270,14 @@ class MainWindow(QMainWindow):
             notification={"dirty": True, "blocks": True, "block_id": block_id, "refresh": "SOURCE"},
             label=f"change algorithm {block_id}"
         )
+
+    def _open_sound_presets(self, block):
+        if block is None or self.get_entity(block.id) is not block:
+            return
+        dialog = SoundPresetDialog(self, block, 'block' if getattr(block, 'drum_voices', None) else 'algorithm')
+        dialog.setAttribute(Qt.WA_DeleteOnClose)
+        dialog.show()
+        return dialog
 
     def _set_mode(self, b, value):
         if b is None or value not in ("SEQ", "LIVE"):

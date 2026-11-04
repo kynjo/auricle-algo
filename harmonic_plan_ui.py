@@ -1,11 +1,13 @@
-"""Compact Perform overview and an immediately editable chord list."""
+"""Project-wide harmonic plan controls and editable chord progression."""
 from copy import deepcopy
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QCheckBox, QComboBox, QDialog, QScrollArea, QSpinBox, QSizePolicy)
 from help_tooltips import bind_help, bind_attributes
 
-from harmonic_plan import NOTES, QUALITIES, METERS, PRESETS, normalized, preset, chord_name
+from harmonic_plan import (NOTES, QUALITIES, METERS, PRESETS, normalized, preset,
+                           chord_name, chord_intervals, scale_chords, shared_tones)
+from generators import SCALE_NAMES, scale_intervals
 
 
 class HarmonicPlanPanel(QWidget):
@@ -34,7 +36,7 @@ class HarmonicPlanPanel(QWidget):
         row.addWidget(self.loop)
         self.current = QLabel('Off')
         row.addWidget(self.current, 1)
-        edit = QPushButton('Edit chords…')
+        edit = QPushButton('Harmony editor…')
         edit.clicked.connect(self.open_editor)
         row.addWidget(edit)
         layout.addLayout(row)
@@ -115,10 +117,14 @@ class HarmonicPlanEditor(QDialog):
     def __init__(self, panel):
         super().__init__(panel.host)
         self.panel = panel
-        self.setWindowTitle('Harmonic plan')
-        self.resize(550, 370)
+        self.setWindowTitle('Harmony & chord transitions')
+        self.resize(950, 570)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
+        self.plan_enabled = QCheckBox('Follow plan')
+        self.plan_enabled.setToolTip('Enable the harmonic plan for blocks that have Follow harmonic plan enabled.')
+        self.plan_enabled.toggled.connect(lambda value: self.panel.change('enabled', value))
+        top.addWidget(self.plan_enabled)
         self.presets = QComboBox()
         self.presets.addItems(PRESETS)
         bind_help(self.presets, "presets", "harmony")
@@ -127,18 +133,75 @@ class HarmonicPlanEditor(QDialog):
         use = QPushButton('Use preset')
         use.clicked.connect(self.use_preset)
         top.addWidget(use)
-        add = QPushButton('+ Add')
-        add.clicked.connect(self.add)
-        top.addWidget(add)
         layout.addLayout(top)
-        hint = QLabel('Root / quality / duration in bars. Changes take effect on the next note.\n'
-                      'Explicit chord names are independent of KEY/SCALE. A seventh chord keeps all four notes.')
+        config = normalized(deepcopy(getattr(panel, '_draft_config', panel.host.project.harmonic_plan)))
+        palette = QHBoxLayout()
+        palette.addWidget(QLabel('Scale palette'))
+        self.palette_root = QComboBox(); self.palette_root.addItems(NOTES)
+        self.palette_root.setCurrentIndex(config.get('palette_root', int(panel.host.project.root_note) % 12))
+        self.palette_root.setAccessibleName('Scale palette root')
+        self.palette_root.setToolTip('Root used to build the palette. Does not change the global key.')
+        palette.addWidget(self.palette_root)
+        self.palette_scale = QComboBox(); self.palette_scale.addItems(SCALE_NAMES)
+        self.palette_scale.setCurrentText(config.get('palette_scale', panel.host.project.scale))
+        self.palette_scale.setAccessibleName('Scale palette')
+        self.palette_scale.setToolTip('Uses the same scale library as the generators; does not change their scale.')
+        palette.addWidget(self.palette_scale, 1)
+        self.palette_size = QComboBox(); self.palette_size.addItems(['Triads', 'Sevenths'])
+        self.palette_size.setAccessibleName('Scale chord size')
+        self.palette_size.setToolTip('Stack every other scale degree into three or four notes.')
+        palette.addWidget(self.palette_size)
+        layout.addLayout(palette)
+        picker = QHBoxLayout()
+        self.candidates = QComboBox()
+        self.candidates.setAccessibleName('Scale chord suggestions')
+        self.candidates.setToolTip('Degrees are built from the selected scale. Common tones compare each option with the last chord.')
+        picker.addWidget(self.candidates, 1)
+        add = QPushButton('+ Add selected')
+        add.setToolTip('Append the selected scale chord to the progression.')
+        add.clicked.connect(self.add)
+        picker.addWidget(add)
+        layout.addLayout(picker)
+        self.palette_notes = QLabel()
+        self.palette_notes.setWordWrap(True)
+        layout.addWidget(self.palette_notes)
+        for control in (self.palette_root, self.palette_scale, self.palette_size):
+            control.currentIndexChanged.connect(self.refresh_palette)
+        hint = QLabel('Each row: bar · root · quality · duration · inversion · transition. '
+                      'Use Replace to put the selected scale chord in that row. Edits apply on the next note.\n'
+                      'Smooth follows the previous voicing; Fixed uses the authored voicing and register. '
+                      'The plan is global across Composition sections.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         layout.addWidget(self.scroll, 1)
+        self.refresh_palette()
         self.rebuild()
+
+    def refresh_palette(self, *_):
+        current = self.candidates.currentIndex()
+        root, scale = self.palette_root.currentIndex(), self.palette_scale.currentText()
+        chords = scale_chords(root, scale, 4 if self.palette_size.currentIndex() else 3)
+        config = normalized(deepcopy(getattr(self.panel, '_draft_config', self.panel.host.project.harmonic_plan)))
+        previous = config['chords'][-1] if config['chords'] else None
+        scores = [shared_tones(previous, chord) for chord in chords]
+        best = max(scores, default=0)
+        self.candidates.blockSignals(True)
+        self.candidates.clear()
+        for i, chord in enumerate(chords):
+            tones = ' '.join(NOTES[(chord['root'] + n) % 12] for n in chord_intervals(chord))
+            hint = f' · {scores[i]} common' if previous else ''
+            if previous and best and scores[i] == best: hint += ' ★'
+            self.candidates.addItem(f'{i+1}. {chord_name(chord)}  ({tones}){hint}', chord)
+        self.candidates.setCurrentIndex(max(0, min(current, len(chords)-1)))
+        self.candidates.blockSignals(False)
+        self.palette_notes.setText('Scale: ' + ' · '.join(NOTES[(root + n) % 12] for n in scale_intervals(scale)) +
+                                   '     ★ most common tones with the last chord')
+
+    def palette_settings(self, config):
+        config['palette_root'] = self.palette_root.currentIndex()
+        config['palette_scale'] = self.palette_scale.currentText()
 
     def rebuild(self):
         old = self.scroll.takeWidget()
@@ -148,6 +211,9 @@ class HarmonicPlanEditor(QDialog):
         layout.setContentsMargins(3, 3, 3, 3)
         layout.setSpacing(4)
         config = normalized(deepcopy(getattr(self.panel, "_draft_config", self.panel.host.project.harmonic_plan)))
+        self.plan_enabled.blockSignals(True)
+        self.plan_enabled.setChecked(config['enabled'])
+        self.plan_enabled.blockSignals(False)
         bar = 1
         for index, chord in enumerate(config['chords']):
             row = QHBoxLayout()
@@ -158,7 +224,9 @@ class HarmonicPlanEditor(QDialog):
             root.setAccessibleName(f'Chord {index+1} root')
             root.currentIndexChanged.connect(lambda value, i=index: self.edit(i, 'root', value))
             row.addWidget(root)
-            quality = QComboBox(); quality.addItems(QUALITIES); quality.setCurrentText(chord['quality'])
+            quality = QComboBox(); quality.addItems(QUALITIES)
+            if chord['quality'] == 'custom': quality.addItem('custom')
+            quality.setCurrentText(chord['quality'])
             quality.setAccessibleName(f'Chord {index+1} quality')
             quality.currentTextChanged.connect(lambda value, i=index: self.edit(i, 'quality', value))
             row.addWidget(quality, 1)
@@ -167,6 +235,25 @@ class HarmonicPlanEditor(QDialog):
             bars.setAccessibleName(f'Chord {index+1} bars')
             bars.valueChanged.connect(lambda value, i=index: self.edit(i, 'bars', value))
             row.addWidget(bars)
+            inversion = QComboBox()
+            inversion.addItem('Block inversion', None)
+            for value in range(-3, 4): inversion.addItem(f'Inversion {value:+d}', value)
+            inversion.setCurrentIndex(inversion.findData(chord.get('inversion')))
+            inversion.setAccessibleName(f'Chord {index+1} inversion')
+            inversion.setToolTip('Block inversion follows each block’s Inversion knob. A number overrides it for this chord.')
+            inversion.currentIndexChanged.connect(lambda _value, i=index, w=inversion: self.edit(i, 'inversion', w.currentData()))
+            row.addWidget(inversion)
+            transition = QComboBox(); transition.addItem('Smooth', 'smooth'); transition.addItem('Fixed', 'fixed')
+            transition.setCurrentIndex(transition.findData(chord.get('transition', 'smooth')))
+            transition.setAccessibleName(f'Chord {index+1} transition')
+            transition.setToolTip('Smooth chooses a voicing near the previous chord. Fixed starts from the authored inversion and register.')
+            transition.currentIndexChanged.connect(lambda _value, i=index, w=transition: self.edit(i, 'transition', w.currentData()))
+            row.addWidget(transition)
+            replace = QPushButton('Replace')
+            replace.setAccessibleName(f'Replace chord {index+1} with selected scale chord')
+            replace.setToolTip('Replace this chord with the selected scale suggestion, retaining duration and transition settings.')
+            replace.clicked.connect(lambda _=False, i=index: self.replace(i))
+            row.addWidget(replace)
             for control, key in ((root, "root"), (quality, "quality"), (bars, "bars")):
                 bind_help(control, key, "harmony")
             for title, delta in (('↑', -1), ('↓', 1), ('×', 0)):
@@ -184,8 +271,18 @@ class HarmonicPlanEditor(QDialog):
     def edit(self, index, key, value):
         config = normalized(deepcopy(getattr(self.panel, "_draft_config", self.panel.host.project.harmonic_plan)))
         if index >= len(config['chords']): return
-        config['chords'][index][key] = value
+        chord = config['chords'][index]
+        was_custom = chord['quality'] == 'custom'
+        if value is None: chord.pop(key, None)
+        else: chord[key] = value
+        if key == 'quality' and value != 'custom':
+            chord.pop('intervals', None)
+            chord.pop('exact', None)
         self.panel.apply(config)
+        self.refresh_palette()
+        if key == 'quality' and was_custom and value != 'custom':
+            self.rebuild()
+            return
         # Keep the editing widgets alive. Update only the bar labels.
         layout = self.scroll.widget().layout()
         bar = 1
@@ -196,8 +293,23 @@ class HarmonicPlanEditor(QDialog):
     def add(self):
         config = normalized(deepcopy(getattr(self.panel, "_draft_config", self.panel.host.project.harmonic_plan)))
         if len(config['chords']) >= 128: return
-        config['chords'].append(deepcopy(config['chords'][-1]) if config['chords'] else {'root': 0, 'quality': 'major', 'bars': 1})
-        self.panel.apply(config); self.rebuild()
+        chord = self.candidates.currentData()
+        if not chord: return
+        config['chords'].append(deepcopy(chord))
+        self.palette_settings(config)
+        self.panel.apply(config); self.refresh_palette(); self.rebuild()
+
+    def replace(self, index):
+        config = normalized(deepcopy(getattr(self.panel, '_draft_config', self.panel.host.project.harmonic_plan)))
+        candidate = self.candidates.currentData()
+        if not candidate or not 0 <= index < len(config['chords']): return
+        previous = config['chords'][index]
+        chord = deepcopy(candidate)
+        for key in ('bars', 'inversion', 'transition'):
+            if key in previous: chord[key] = previous[key]
+        config['chords'][index] = chord
+        self.palette_settings(config)
+        self.panel.apply(config); self.refresh_palette(); self.rebuild()
 
     def move(self, index, delta):
         config = normalized(deepcopy(getattr(self.panel, "_draft_config", self.panel.host.project.harmonic_plan)))
@@ -205,10 +317,10 @@ class HarmonicPlanEditor(QDialog):
         if not 0 <= index < len(chords): return
         if delta == 0: chords.pop(index)
         elif 0 <= index+delta < len(chords): chords[index], chords[index+delta] = chords[index+delta], chords[index]
-        self.panel.apply(config); self.rebuild()
+        self.panel.apply(config); self.refresh_palette(); self.rebuild()
 
     def use_preset(self):
         config = normalized(deepcopy(getattr(self.panel, "_draft_config", self.panel.host.project.harmonic_plan)))
         config['chords'] = preset(self.presets.currentText())['chords']
         config['enabled'] = True
-        self.panel.apply(config); self.rebuild()
+        self.panel.apply(config); self.refresh_palette(); self.rebuild()

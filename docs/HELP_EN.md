@@ -15,11 +15,12 @@ This reference follows the current interface. English control names are kept so 
 - [Mutators](#mutators)
 - [Process Layers](#processes)
 - [Relations / Dialogue](#relations)
-- [Perform / Global](#performance)
+- [Composition / Global](#performance)
 - [MIDI expression](#expression)
 - [MIDI Learn / Sync](#midi)
 - [Monitor / Piano roll](#piano-roll)
 - [Parameter automation](#parameter-automation)
+- [Algorithm and block presets](#sound-presets)
 - [Troubleshooting](#troubleshooting)
 
 <a name="quickstart"></a>
@@ -41,6 +42,14 @@ This reference follows the current interface. English control names are kept so 
 | **SEED** | Project random seed for repeatable generation. Regenerate rebuilds material; it does not start playback. |
 
 Units: one beat is a quarter note; the ordinary base step is 0.25 beat (a sixteenth). MIDI channels are 1–16; note/controller values are 0–127. A value of zero is a rest in rhythm/Pattern material, but can be a valid root degree in pitch generators.
+
+<a name="sound-presets"></a>
+
+## Algorithm and block presets
+
+Open Presets in the Block Inspector header. Algorithm loads source settings only; Block / Drum Voice also loads musical parameters, mode, mutations, processes and MIDI Expression. Search factory and user presets, compare authored values, then Apply. Save current creates a reusable user preset; Import/Export exchanges JSON files. Undo restores the previous settings.
+
+Presets store manual bases, while existing Composition/macro influences and source highlights remain active. Routing, channels, note maps, names, mute and project assignments remain with the destination. Drum Kit presets match existing voices by role and require the same number of voices per role. Individual Drum Voice presets retain the receiving voice's role. Lengths and rotations fit the current project length.
 
 <a name="composition"></a>
 
@@ -948,7 +957,7 @@ Cycle = Call + Gap + Response + Gap. Separation 1 enforces alternating turns; 0 
 
 <a name="performance"></a>
 
-## Perform / Global
+## Composition / Global
 
 | Parameter | Description |
 | --- | --- |
@@ -989,6 +998,13 @@ Cycle = Call + Gap + Response + Gap. Separation 1 enforces alternating turns; 0 
 | **Root** | Chord root pitch class, independent of the header KEY/SCALE. |
 | **Quality** | Chord type and its tones; seventh chords retain four notes. |
 | **Duration** | Chord duration, 1–64 bars of the Harmonic Plan meter. |
+| **Scale palette** | Builds triads or seventh chords by stacking alternate degrees from Auricle's scale library. The palette does not change the project key or scale. |
+| **Transition** | Smooth chooses a voicing near the previous chord; Fixed uses the chord's inversion and register without the previous voicing. Both respect the block register. |
+| **Chord inversion** | Block inversion follows the individual block control; a numbered choice overrides it for this chord. |
+
+Open Composition / Global, expand Harmonic Plan and select Harmony editor. The scale palette uses Auricle's scale library and initially follows the project key and scale; later palette choices do not retune generators. Choose Triads or Sevenths, then Add selected or Replace a row. The star marks suggestions sharing the most pitch classes with the last chord; it is a simple aid, not a prediction. Bracketed numbers show exact semitone intervals for less familiar scale chords.
+
+Reorder or remove rows and set each duration in bars of the plan meter. Block inversion follows each block's Inversion control; numbered inversions override it for that chord. Smooth chooses a voicing close to the previous chord; Fixed resolves independently within the block register. Scale-generated chords preserve exactly three or four notes. Changes affect the next generated note; per-block Follow harmonic plan must be enabled. The plan is global, including during Composition playback, and its meter is independent of the Composition meter.
 
 <a name="influence"></a>
 

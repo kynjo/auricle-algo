@@ -113,10 +113,11 @@ def help_markdown(language="en"):
                 ("generators", "Generators", "Генераторы"), ("drums", "Drum Kit", "Drum Kit и связи голосов"),
                 ("strum", "CHORD / PAD · Strum", "CHORD / PAD · Strum"),
                 ("motifs", "Motifs", "Мотивы"), ("mutators", "Mutators", "Мутаторы"), ("processes", "Process Layers", "Process Layers"),
-                ("relations", "Relations / Dialogue", "Relations / Dialogue"), ("performance", "Perform / Global", "Perform / Global"),
+                ("relations", "Relations / Dialogue", "Relations / Dialogue"), ("performance", "Composition / Global", "Composition / Global"),
                 ("expression", "MIDI expression", "MIDI Expression"), ("midi", "MIDI Learn / Sync", "MIDI Learn / Sync"),
                 ("piano-roll", "Monitor / Piano roll", "Monitor / Piano roll"),
                 ("parameter-automation", "Parameter automation", "Автоматизация параметров"),
+                ("sound-presets", "Algorithm and block presets", "Пресеты алгоритмов и блоков"),
                 ("troubleshooting", "Troubleshooting", "Диагностика")]
     lines += [f"- [{h(en, russian)}](#{anchor})" for anchor, en, russian in contents]
     lines.append("")
@@ -133,6 +134,11 @@ def help_markdown(language="en"):
     table("project")
     p("Units: one beat is a quarter note; the ordinary base step is 0.25 beat (a sixteenth). MIDI channels are 1–16; note/controller values are 0–127. A value of zero is a rest in rhythm/Pattern material, but can be a valid root degree in pitch generators.",
       "Единицы: одна доля — четверть; обычный базовый шаг — 0.25 доли (шестнадцатая). MIDI-каналы — 1–16, ноты и значения контроллеров — 0–127. Ноль означает паузу в ритме/Pattern, но может быть полноценной корневой ступенью высотного генератора.")
+    section(h("Algorithm and block presets", "Пресеты алгоритмов и блоков"), "sound-presets")
+    p("Open Presets in the Block Inspector header. Algorithm loads source settings only; Block / Drum Voice also loads musical parameters, mode, mutations, processes and MIDI Expression. Search factory and user presets, compare authored values, then Apply. Save current creates a reusable user preset; Import/Export exchanges JSON files. Undo restores the previous settings.",
+      "Откройте Presets в шапке Block Inspector. Algorithm загружает только исходные настройки алгоритма; Block / Drum Voice — также музыкальные параметры, режим, мутации, процессы и MIDI Expression. Найдите заводской или пользовательский вариант, сравните ручные значения и нажмите Apply. Save current создаёт пользовательский пресет; Import/Export обмениваются JSON-файлами. Undo возвращает предыдущие настройки.")
+    p("Presets store manual bases, while existing Composition/macro influences and source highlights remain active. Routing, channels, note maps, names, mute and project assignments remain with the destination. Drum Kit presets match existing voices by role and require the same number of voices per role. Individual Drum Voice presets retain the receiving voice's role. Lengths and rotations fit the current project length.",
+      "Пресет хранит ручную основу; действующие влияния Composition/макросов и подсветка сохраняются. MIDI-маршруты, каналы, note map, имена, mute и проектные назначения остаются у получателя. Пресет Drum Kit сопоставляет существующие голоса по ролям и требует одинакового числа голосов каждой роли. Индивидуальный пресет Drum Voice сохраняет роль получателя. Длины и вращения ограничиваются длиной текущего проекта.")
     section(h("Composition · form and arrangement", "Composition · форма и аранжировка"), "composition")
     p("Composition schedules musical settings over sections on the same transport as Blocks. The form overview stays visible while SECTION, INSTRUMENTS and GLOBAL edit different scopes. Selecting a section changes the editor only. Header Play auditions Blocks without section automation or Perform; Composition Play starts the authored form.",
       "Composition распределяет музыкальные настройки по секциям на общем с Blocks транспорте. Обзор формы остаётся видимым; SECTION, INSTRUMENTS и GLOBAL редактируют разные уровни. Выбор секции меняет только редактор. Главный Play прослушивает Blocks без секционной автоматизации и Perform; Composition Play запускает подготовленную форму.")
@@ -242,11 +248,15 @@ def help_markdown(language="en"):
     table("dialogue")
     p("Cycle = Call + Gap + Response + Gap. Separation 1 enforces alternating turns; 0 bypasses separation. Cycle chance is tested once per whole cycle. Dialogue requires distinct instrument owners; a Drum Voice belongs to its kit. If an instrument appears in multiple Dialogue pairs, the earlier pair wins. Ordinary Relations use explicit streams, and cyclic graphs use delayed history rather than recursive same-pass updates.",
       "Цикл = Call + Gap + Response + Gap. Separation = 1 обеспечивает чередование; 0 обходит разделение. Cycle chance проверяется один раз на весь цикл. Нужны разные инструменты-владельцы: Drum Voice принадлежит своему Kit. Если инструмент входит в несколько пар Dialogue, приоритет у более ранней пары. Обычные Relations используют явные потоки; циклические графы читают задержанную историю без рекурсивного обновления в одном проходе.")
-    section("Perform / Global", "performance")
+    section("Composition / Global", "performance")
     table("perform")
     table("macro_route")
     table("director")
     table("harmony")
+    p("Open Composition / Global, expand Harmonic Plan and select Harmony editor. The scale palette uses Auricle's scale library and initially follows the project key and scale; later palette choices do not retune generators. Choose Triads or Sevenths, then Add selected or Replace a row. The star marks suggestions sharing the most pitch classes with the last chord; it is a simple aid, not a prediction. Bracketed numbers show exact semitone intervals for less familiar scale chords.",
+      "Откройте Composition / Global, разверните Harmonic Plan и выберите Harmony editor. Палитра использует библиотеку гамм Auricle и первоначально берёт тональность и гамму проекта; последующие изменения палитры не перенастраивают генераторы. Выберите Triads или Sevenths, затем Add selected или Replace в строке. Звёздочка отмечает варианты с наибольшим числом общих звуков с последним аккордом; это подсказка, а не прогноз. Числа в скобках показывают точные интервалы в полутонах для нестандартных аккордов.")
+    p("Reorder or remove rows and set each duration in bars of the plan meter. Block inversion follows each block's Inversion control; numbered inversions override it for that chord. Smooth chooses a voicing close to the previous chord; Fixed resolves independently within the block register. Scale-generated chords preserve exactly three or four notes. Changes affect the next generated note; per-block Follow harmonic plan must be enabled. The plan is global, including during Composition playback, and its meter is independent of the Composition meter.",
+      "Меняйте порядок и удаляйте строки; длительность задаётся в тактах размера плана. Block inversion использует Inversion каждого блока, числовое обращение переопределяет его для аккорда. Smooth выбирает расположение ближе к предыдущему аккорду; Fixed строит его независимо в регистре блока. Аккорды из гаммы сохраняют ровно три или четыре звука. Изменения слышны со следующей ноты; в блоке должен быть включён Follow harmonic plan. План действует глобально, в том числе при проигрывании Composition; его размер не зависит от размера Composition.")
     section(h("Parameter influence and knob feedback", "Влияния на параметры и индикация кнобов"), "influence", 3)
     table("influence")
     p("The manual base remains available while Perform, Composition or Relations contribute. Source dots distinguish assigned and active influences. The needle may display the effective parameter or an output-equivalent value; the short outer tick retains the manual setting. An output-equivalent indication summarizes event-level shaping rather than rewriting every block parameter.",

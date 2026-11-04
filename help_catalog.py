@@ -439,6 +439,9 @@ presets | Preset | Selects a starter chord progression; Use preset replaces the 
 root | Root | Chord root pitch class, independent of the header KEY/SCALE. | Класс высоты тоники аккорда, независимый от KEY/SCALE в заголовке.
 quality | Quality | Chord type and its tones; seventh chords retain four notes. | Тип аккорда и его тоны; септаккорды сохраняют четыре ноты.
 bars | Duration | Chord duration, 1–64 bars of the Harmonic Plan meter. | Длительность аккорда, 1–64 такта размера Harmonic Plan.
+palette | Scale palette | Builds triads or seventh chords by stacking alternate degrees from Auricle's scale library. The palette does not change the project key or scale. | Строит трезвучия или четырёхзвучия через ступень из библиотеки гамм Auricle. Палитра не меняет тональность и гамму проекта.
+transition | Transition | Smooth chooses a voicing near the previous chord; Fixed uses the chord's inversion and register without the previous voicing. Both respect the block register. | Smooth выбирает расположение ближе к предыдущему аккорду; Fixed использует обращение и регистр без учёта предыдущего расположения. Оба варианта учитывают регистр блока.
+inversion | Chord inversion | Block inversion follows the individual block control; a numbered choice overrides it for this chord. | Block inversion использует настройку конкретного блока; число переопределяет её для этого аккорда.
 """)
 _add("midi_expression", """
 cc_table | CC lanes | Up to 16 distinct CC lanes. Values use the shared Musical Clock; choose a row to edit its curve below. | До 16 отдельных линий CC. Значения используют общие музыкальные часы; выберите строку для редактирования её кривой ниже.

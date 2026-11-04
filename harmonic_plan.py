@@ -7,6 +7,7 @@ from copy import deepcopy
 from auricle_catalogs import ROLE_PROFILES
 from auricle_model import block_root
 from voice_leading import VoiceLeading
+from generators import SCALE_NAMES, scale_intervals
 
 NOTES = ('C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B')
 QUALITIES = {
@@ -41,17 +42,69 @@ def normalized(data):
     for item in items[:128]:
         try:
             quality = str(item.get('quality', 'major'))
-            if quality not in QUALITIES: continue
-            chords.append({'root': int(item.get('root', 0)) % 12, 'quality': quality,
-                           'bars': max(1, min(64, int(item.get('bars', 1))))})
+            if quality != 'custom' and quality not in QUALITIES: continue
+            chord = {'root': int(item.get('root', 0)) % 12, 'quality': quality,
+                     'bars': max(1, min(64, int(item.get('bars', 1))))}
+            if quality == 'custom':
+                intervals = item.get('intervals')
+                if not isinstance(intervals, (list, tuple)) or not 1 <= len(intervals) <= 4: continue
+                intervals = [int(i) for i in intervals]
+                if intervals[0] != 0 or any(not 0 <= i <= 36 for i in intervals) or any(a >= b for a, b in zip(intervals, intervals[1:])): continue
+                chord['intervals'] = intervals
+            if item.get('inversion') is not None:
+                chord['inversion'] = max(-3, min(3, int(item['inversion'])))
+            if item.get('transition') in ('smooth', 'fixed'):
+                chord['transition'] = item['transition']
+            if item.get('exact') is True:
+                chord['exact'] = True
+            chords.append(chord)
         except (TypeError, ValueError, AttributeError, OverflowError):
             continue
-    return {'enabled': bool(data.get('enabled', False)), 'meter': meter,
-            'loop': bool(data.get('loop', True)), 'chords': chords}
+    result = {'enabled': bool(data.get('enabled', False)), 'meter': meter,
+              'loop': bool(data.get('loop', True)), 'chords': chords}
+    if data.get('palette_scale') in SCALE_NAMES:
+        result['palette_scale'] = data['palette_scale']
+    try:
+        if 'palette_root' in data: result['palette_root'] = int(data['palette_root']) % 12
+    except (ValueError, TypeError, OverflowError):
+        pass
+    return result
 
 
 def chord_name(chord):
-    return NOTES[chord['root']] + QUALITIES[chord['quality']][0]
+    quality = chord['quality']
+    if quality == 'custom':
+        return NOTES[chord['root']] + ' [' + ','.join(map(str, chord['intervals'])) + ']'
+    return NOTES[chord['root']] + QUALITIES[quality][0]
+
+
+def chord_intervals(chord):
+    return chord['intervals'] if chord['quality'] == 'custom' else QUALITIES[chord['quality']][1]
+
+
+def scale_chords(root, scale, size=3):
+    """Stack alternating degrees from the application's own scale library.
+
+    Unknown chord shapes retain their exact intervals instead of being rounded
+    to a familiar but musically different quality.
+    """
+    scale = list(scale_intervals(scale))
+    count = len(scale)
+    size = max(3, min(4, int(size)))
+    result = []
+    for degree in range(count):
+        notes = [scale[(degree + 2*i) % count] + 12*((degree + 2*i)//count) for i in range(size)]
+        intervals = tuple(n - notes[0] for n in notes)
+        quality = next((name for name, (_, tones) in QUALITIES.items() if tones == intervals), 'custom')
+        chord = {'root': (int(root) + notes[0]) % 12, 'quality': quality, 'bars': 1, 'exact': True}
+        if quality == 'custom': chord['intervals'] = list(intervals)
+        result.append(chord)
+    return result
+
+
+def shared_tones(first, second):
+    def tones(chord): return {(chord['root'] + i) % 12 for i in chord_intervals(chord)}
+    return len(tones(first) & tones(second)) if first and second else 0
 
 
 def metric_weight(meter, phase):
@@ -130,7 +183,7 @@ class HarmonicRuntime:
             if position < end - 1e-8 or last:
                 held = not config['loop'] and last and beat >= total
                 return {**chord, 'name': chord_name(chord), 'index': index, 'cycle': cycle,
-                        'pitch_classes': [(chord['root'] + i) % 12 for i in QUALITIES[chord['quality']][1]],
+                        'pitch_classes': [(chord['root'] + i) % 12 for i in chord_intervals(chord)],
                         'bar': int((beat + 1e-8) // bar_beats) + 1,
                         'bar_beats': bar_beats, 'position': max(0.0, position - cursor),
                         'duration': duration, 'remaining': None if held else max(0.0, end - position),
@@ -151,25 +204,26 @@ class HarmonicRuntime:
                                   if center_override is None else center_override)
             width = max(6.0, float(block.parameters.get('role_width', profile['pitch_range'])))
             token = (chord['cycle'], chord['index'], base,
-                     block.parameters.get('harmony_inversion', 0),
+                     chord.get('inversion', block.parameters.get('harmony_inversion', 0)), chord.get('transition', 'smooth'),
                      block.parameters.get('harmony_spread', 7), block.parameters.get('harmony_size', 3),
                      center, width)
             if self.tokens.get(block.id) != token:
-                intervals = list(QUALITIES[chord['quality']][1])
+                intervals = list(chord_intervals(chord))
                 size = max(1, min(4, int(block.parameters.get('harmony_size', 3))))
+                if chord.get('exact'): size = len(intervals)
                 if len(intervals) == 4: size = max(size, 4)  # explicit sevenths retain their quality
                 if size == 4 and len(intervals) == 3:
                     intervals.append(11 if chord['quality'] == 'major' else 10)
                 intervals = intervals[:size]
                 root = min(range(chord['root'], 128, 12), key=lambda note: abs(note-target))
                 notes = [root+i for i in intervals]
-                inversion = int(block.parameters.get('harmony_inversion', 0))
+                inversion = int(chord.get('inversion', block.parameters.get('harmony_inversion', 0)))
                 for _ in range(abs(inversion) % len(notes)):
                     notes = notes[1:] + [notes[0]+12] if inversion > 0 else [notes[-1]-12] + notes[:-1]
                 spread = max(0, min(36, int(block.parameters.get('harmony_spread', 7))))
                 for i in range(1, len(notes)):
                     while notes[i]-notes[0] < spread*i/max(1, len(notes)-1): notes[i] += 12
-                previous = self.voicings.get(block.id)
+                previous = self.voicings.get(block.id) if chord.get('transition', 'smooth') == 'smooth' else None
                 if previous:
                     # A deliberate Base Note / Center change moves the target
                     # register immediately, even within the current chord.

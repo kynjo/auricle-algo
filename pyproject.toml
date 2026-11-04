@@ -37,6 +37,7 @@ py-modules = [
     "midi_expression", "midi_expression_ui", "midi_learn", "midi_learn_ui", "midi_input_reader", "midi_input_diagnostics",
     "drum_articulation", "drum_articulation_ui",
     "strum", "strum_ui",
+    "sound_presets", "sound_presets_ui", "sound_preset_catalog",
     "ui_metrics", "ui_icons", "ui_layout",
 ]
 

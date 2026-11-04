@@ -121,6 +121,15 @@ class ParameterInfluence:
             entry['base'] = (True, deepcopy(value))
             self._resolve(block, key, entry)
 
+    def unset_manual(self, block, key):
+        """Restore an implicit default while retaining active automatic layers."""
+        entry = self._reconcile(block, key)
+        if entry is None:
+            self._assign(block, key, False, None)
+        else:
+            entry['base'] = (False, None)
+            self._resolve(block, key, entry)
+
     def write(self, block, key, value, source, *, source_id=None, weight=1.):
         entry = self._reconcile(block, key)
         if entry is None:
