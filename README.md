@@ -1,8 +1,9 @@
 # Auricle · Algorithmic MIDI Generator
 
-**Auricle v2.0.1** — настольный MIDI-генератор для драм-машин, синтезаторов и DAW. Программа создаёт MIDI-события; звук воспроизводит подключённый инструмент.
+**Auricle ** — настольный MIDI-генератор для драм-машин, синтезаторов и DAW. Программа создаёт MIDI-события; звук воспроизводит подключённый инструмент.
 
-![Интерфейс Auricle](docs/screenshots/auricle-v2.0.png)
+
+<img width="1440" height="1074" alt="изображение" src="https://github.com/user-attachments/assets/8fd57e10-00f3-4551-8e8c-6daf31c75a87" />
 
 ## Возможности
 
